@@ -32,6 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -43,6 +44,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -73,7 +78,7 @@ fun EditorScreen(c: EditorController) {
             }
             when (val phase = c.phase) {
                 Phase.Preparing, Phase.Loading -> LoadingCover(c)
-                is Phase.Failed -> FailedCover(phase.message, onClose = c::close)
+                is Phase.Failed -> FailedCover(phase.message, onClose = c::close, diagnostics = c::diagnostics)
                 Phase.Ready -> Unit
             }
         }
@@ -191,7 +196,9 @@ private fun LoadingCover(c: EditorController) {
 }
 
 @Composable
-private fun FailedCover(message: String, onClose: () -> Unit) {
+private fun FailedCover(message: String, onClose: () -> Unit, diagnostics: () -> String) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         Column(
             Modifier.fillMaxSize().padding(32.dp),
@@ -202,7 +209,13 @@ private fun FailedCover(message: String, onClose: () -> Unit) {
             Spacer(Modifier.height(10.dp))
             Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(24.dp))
-            Button(onClick = onClose) { Text("닫기") }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = {
+                    clipboard.setText(AnnotatedString(diagnostics()))
+                    Toast.makeText(context, "오류 내용을 복사했습니다", Toast.LENGTH_SHORT).show()
+                }) { Text("오류 내용 복사") }
+                Button(onClick = onClose) { Text("닫기") }
+            }
         }
     }
 }

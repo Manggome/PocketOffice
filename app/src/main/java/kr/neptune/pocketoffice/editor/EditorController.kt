@@ -265,6 +265,8 @@ class EditorController(private val activity: EditorActivity) {
             .put("readonly", readonly)
         openScript = "Pocket.open($opts)"
         if (hostReady) runOpen()
+        main.removeCallbacks(loadTimeout)
+        main.postDelayed(loadTimeout, 120_000)
     }
 
     private fun runOpen() {
@@ -322,7 +324,9 @@ class EditorController(private val activity: EditorActivity) {
         }
         view.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(message: ConsoleMessage): Boolean {
-                Log.d(TAG, "[js] ${message.message()} (${message.sourceId()}:${message.lineNumber()})")
+                val line = "[${message.messageLevel()}] ${message.message()} (${message.sourceId().substringAfterLast('/')}:${message.lineNumber()})"
+                Log.d(TAG, line)
+                keepLog(line)
                 return true
             }
 
@@ -355,6 +359,38 @@ class EditorController(private val activity: EditorActivity) {
         }
     }
 
+    // ------------------------------------------------------------------ 진단
+
+    /**
+     * 편집기 콘솔의 마지막 몇백 줄. 폰에서 문서가 안 열릴 때 "오류 내용 복사" 로 그대로 넘겨받으려고 둔다.
+     * 문서 내용은 콘솔에 찍히지 않는다 (파일 이름 정도만 나온다).
+     */
+    private val log = ArrayDeque<String>()
+
+    private fun keepLog(line: String) {
+        synchronized(log) {
+            log.addLast(line.take(500))
+            while (log.size > 300) log.removeFirst()
+        }
+    }
+
+    fun diagnostics(): String = buildString {
+        appendLine("포켓오피스 ${kr.neptune.pocketoffice.BuildConfig.VERSION_NAME} · 엔진 ${EngineStore.id}")
+        appendLine("안드로이드 ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT}) · ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+        val webViewPackage = runCatching { androidx.webkit.WebViewCompat.getCurrentWebViewPackage(activity) }.getOrNull()
+        appendLine("WebView ${webViewPackage?.packageName} ${webViewPackage?.versionName}")
+        appendLine("문서 ${format?.ext} · 단계 $phase")
+        appendLine("----")
+        synchronized(log) { log.forEach { appendLine(it) } }
+    }
+
+    /** 편집기가 끝내 열리지 않을 때를 위한 시한. 큰 문서도 보통 30초 안에 열린다 */
+    private val loadTimeout = Runnable {
+        if (phase == Phase.Loading) {
+            phase = Phase.Failed("문서를 여는 데 너무 오래 걸립니다. 아래 '오류 내용 복사' 로 알려 주세요.")
+        }
+    }
+
     private fun handleEvent(type: String, payload: JSONObject) {
         when (type) {
             "ready" -> {
@@ -362,6 +398,7 @@ class EditorController(private val activity: EditorActivity) {
                 runOpen()
             }
             "opened" -> {
+                main.removeCallbacks(loadTimeout)
                 phase = Phase.Ready
                 readonly = payload.optBoolean("readonly", readonly)
             }
@@ -370,6 +407,7 @@ class EditorController(private val activity: EditorActivity) {
             "requestSave" -> save()
             "error" -> {
                 val message = payload.optString("message", "알 수 없는 오류")
+                keepLog("[event] error: $message")
                 if (phase is Phase.Loading) {
                     phase = Phase.Failed("문서를 열지 못했습니다\n$message")
                 } else {
@@ -493,6 +531,11 @@ class EditorController(private val activity: EditorActivity) {
 
     private fun handleSaved(id: String, file: File, fileName: String, dirtyAfter: Boolean) {
         val op = pending.remove(id)
+        if (op == null && id.startsWith("print-")) {
+            // 편집기 자체의 인쇄 버튼이 만든 PDF (host.js 가 가로챔)
+            writeOut(Op.Print(wasDirty = false), file)
+            return
+        }
         if (op == null) {
             // 편집기 메뉴의 "다른 형식으로 다운로드" 등 이쪽에서 시키지 않은 내보내기.
             // 이 경로는 편집기의 고쳐짐 표시를 건드리지 않는다
@@ -613,6 +656,7 @@ class EditorController(private val activity: EditorActivity) {
     }
 
     private fun handleSaveFailed(id: String, message: String) {
+        keepLog("[save] $id 실패: $message")
         val op = pending.remove(id)
         busy = null
         finishAfterSave = false
@@ -668,6 +712,7 @@ class EditorController(private val activity: EditorActivity) {
     }
 
     fun onDestroy() {
+        main.removeCallbacks(loadTimeout)
         engine.doc = null
         webView?.let {
             (it.parent as? ViewGroup)?.removeView(it)

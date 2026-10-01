@@ -170,6 +170,65 @@
   }
   frame.addEventListener('load', watchEditorSaves);
 
+  // 편집기의 인쇄 버튼.
+  //
+  // 편집기는 PDF 를 만들어 숨은 iframe(#id-print-frame)에 blob 으로 싣고 그 창의 print() 를 부른다.
+  // WebView 에서는 print() 가 아무 일도 하지 않으므로, 그 PDF 를 가로채 안드로이드 인쇄 화면으로 넘긴다.
+  // 편집기 앱 iframe 은 editor.html 안에서 나중에 만들어지므로 두 단계로 지켜본다.
+  var printSeq = 0;
+  var printSeen = '';
+
+  function grabPrint(printFrame) {
+    var src = printFrame.getAttribute('src') || '';
+    if (src.indexOf('blob:') !== 0 || src === printSeen) return;
+    printSeen = src;
+    fetch(src)
+      .then(function (r) {
+        return r.blob();
+      })
+      .then(function (blob) {
+        deliver('print-' + Date.now() + '-' + printSeq++, { file: blob, fileName: 'print.pdf', dirty: true });
+      })
+      .catch(function (e) {
+        log('인쇄 PDF 를 읽지 못했습니다: ' + e);
+      });
+  }
+
+  function watchPrintFrames(appWin) {
+    if (!appWin) return;
+    var doc;
+    try {
+      doc = appWin.document;
+    } catch (e) {
+      return;
+    }
+    // 표시는 창이 아니라 문서에 단다. iframe 은 처음의 빈 문서에서 편집기 문서로 넘어갈 때
+    // 같은 창 객체를 그대로 쓰므로, 창에 달면 빈 문서를 지켜보다 끝난다
+    if (!doc || !doc.body || doc.__pocketPrint) return;
+    doc.__pocketPrint = true;
+    new appWin.MutationObserver(function () {
+      var pf = doc.getElementById('id-print-frame');
+      if (pf) grabPrint(pf);
+    }).observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
+  }
+
+  frame.addEventListener('load', function () {
+    var editorDoc = frame.contentWindow && frame.contentWindow.document;
+    if (!editorDoc) return;
+    function hookApps() {
+      editorDoc.querySelectorAll('iframe').forEach(function (f) {
+        watchPrintFrames(f.contentWindow);
+        if (f.__pocketHooked) return;
+        f.__pocketHooked = true;
+        f.addEventListener('load', function () {
+          watchPrintFrames(f.contentWindow);
+        });
+      });
+    }
+    new frame.contentWindow.MutationObserver(hookApps).observe(editorDoc.body, { childList: true, subtree: true });
+    hookApps();
+  });
+
   window.Pocket = {
     /** @param {{url: string, fileName: string, saveExt?: string, readonly?: boolean}} opts */
     open: function (opts) {
