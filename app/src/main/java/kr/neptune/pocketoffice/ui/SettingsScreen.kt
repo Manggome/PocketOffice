@@ -74,12 +74,13 @@ fun SettingsScreen(vm: HomeViewModel, onBack: () -> Unit, onRequestAccess: () ->
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Column(Modifier.widthIn(max = 640.dp).fillMaxWidth()) {
-                Section("문서 열기")
-                SwitchRow(
-                    title = "읽기 모드로 열기",
-                    caption = "문서를 열면 보기만 합니다. 위쪽 '편집' 을 눌러야 고칠 수 있습니다.",
-                    checked = settings.openInViewMode,
-                    onChange = { on -> vm.prefs.update { it.copy(openInViewMode = on) } },
+                Section("문서를 누르면")
+                ModeRow(settings.openMode) { m -> vm.prefs.update { it.copy(openMode = m) } }
+                Text(
+                    "다른 앱(파일 관리자, 카카오톡)에서 문서를 눌러도 이 설정대로 열립니다. PDF 는 보기 모드에서 앱 자체 뷰어로 열립니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
                 )
 
                 Section("내 폰의 문서")

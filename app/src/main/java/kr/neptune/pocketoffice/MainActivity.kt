@@ -21,6 +21,7 @@ import kr.neptune.pocketoffice.core.DeviceDoc
 import kr.neptune.pocketoffice.core.DeviceScanner
 import kr.neptune.pocketoffice.core.DocFormat
 import kr.neptune.pocketoffice.core.DocIo
+import kr.neptune.pocketoffice.core.OpenMode
 import kr.neptune.pocketoffice.core.RecentDoc
 import kr.neptune.pocketoffice.core.Snapshot
 import kr.neptune.pocketoffice.editor.DocRequest
@@ -74,8 +75,22 @@ class MainActivity : ComponentActivity(), HomeActions {
         vm.onResume()
     }
 
-    private fun open(request: DocRequest) {
-        startActivity(DocRequest.intent(this, request))
+    override fun onPostResume() {
+        super.onPostResume()
+        // 첫 화면이 다 그려진 뒤 한가할 때 WebView 엔진을 미리 깨워 둔다.
+        // 처음 WebView 를 만들 때 크로미움을 올리느라 걸리는 시간을 문서를 열 때 치르지 않게.
+        if (!webViewWarmed) {
+            webViewWarmed = true
+            android.os.Looper.myQueue().addIdleHandler {
+                runCatching { android.webkit.WebSettings.getDefaultUserAgent(applicationContext) }
+                false
+            }
+        }
+    }
+
+    private fun open(request: DocRequest, mode: OpenMode = vm.prefs.settings.value.openMode, name: String? = null) {
+        runCatching { startActivity(DocRequest.intent(this, request, mode, name)) }
+            .onFailure { toast("문서를 열 수 없습니다: ${it.message}") }
     }
 
     // ------------------------------------------------------------------ HomeActions
@@ -85,12 +100,12 @@ class MainActivity : ComponentActivity(), HomeActions {
             .onFailure { toast("파일 고르기 화면을 열 수 없습니다") }
     }
 
-    override fun openRecent(doc: RecentDoc) {
+    override fun openRecent(doc: RecentDoc, mode: OpenMode) {
         lifecycleScope.launch {
             val uri = doc.parsedUri
             val ok = withContext(Dispatchers.IO) { DocIo.isReachable(this@MainActivity, uri) }
             if (ok) {
-                open(DocRequest.Existing(uri))
+                open(DocRequest.Existing(uri), mode, doc.name)
             } else {
                 // 다른 앱이 잠깐만 빌려준 파일이거나, 지워졌거나 옮겨졌다
                 toast("파일을 열 수 없습니다. 옮겨졌거나 지워졌을 수 있습니다.")
@@ -98,11 +113,11 @@ class MainActivity : ComponentActivity(), HomeActions {
         }
     }
 
-    override fun openDevice(doc: DeviceDoc) = open(DocRequest.Existing(doc.uri))
+    override fun openDevice(doc: DeviceDoc, mode: OpenMode) = open(DocRequest.Existing(doc.uri), mode, doc.name)
 
-    override fun createNew(format: DocFormat) = open(DocRequest.newDocument(format))
+    override fun createNew(format: DocFormat) = open(DocRequest.newDocument(format), OpenMode.EDIT)
 
-    override fun restore(snapshot: Snapshot) = open(DocRequest.Restore(snapshot.key))
+    override fun restore(snapshot: Snapshot) = open(DocRequest.Restore(snapshot.key), OpenMode.EDIT)
 
     override fun requestAccess() {
         val intent = DeviceScanner.accessSettingsIntent(this)
@@ -115,6 +130,10 @@ class MainActivity : ComponentActivity(), HomeActions {
     }
 
     override fun openSettings() = Unit // HomeScreen 쪽에서 덮어쓴다
+
+    private companion object {
+        var webViewWarmed = false
+    }
 
     private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
 }

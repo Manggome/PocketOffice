@@ -68,12 +68,19 @@ import kr.neptune.pocketoffice.core.DocKind
 import kr.neptune.pocketoffice.core.RecentDoc
 import kr.neptune.pocketoffice.core.Snapshot
 import kr.neptune.pocketoffice.core.SortMode
+import kr.neptune.pocketoffice.core.OpenMode
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 
 /** 첫 화면에서 일어나는 일 중 액티비티가 처리해야 하는 것 */
 interface HomeActions {
     fun openPicker()
-    fun openRecent(doc: RecentDoc)
-    fun openDevice(doc: DeviceDoc)
+    fun openRecent(doc: RecentDoc, mode: OpenMode)
+    fun openDevice(doc: DeviceDoc, mode: OpenMode)
     fun createNew(format: DocFormat)
     fun restore(snapshot: Snapshot)
     fun requestAccess()
@@ -127,6 +134,9 @@ fun HomeScreen(vm: HomeViewModel, actions: HomeActions) {
                 )
             }
             if (!searching) {
+                full {
+                    ModeRow(settings.openMode) { m -> vm.prefs.update { it.copy(openMode = m) } }
+                }
                 full { EngineCard(Modifier.padding(vertical = 8.dp)) }
                 full { NewRow(actions) }
             }
@@ -160,7 +170,7 @@ fun HomeScreen(vm: HomeViewModel, actions: HomeActions) {
                             )
                         }
                     }
-                    items(recent, key = { "r-" + it.uri }) { doc -> RecentRow(vm, doc, actions) }
+                    items(recent, key = { "r-" + it.uri }) { doc -> RecentRow(vm, doc, settings.openMode, actions) }
                 }
 
                 HomeTab.DEVICE -> {
@@ -192,18 +202,64 @@ fun HomeScreen(vm: HomeViewModel, actions: HomeActions) {
                         }
                         if (device.isEmpty() && !scanning) full { EmptyNote("문서를 찾지 못했습니다") }
                         items(device, key = { "d-" + it.path }) { doc ->
+                            var menu by remember { mutableStateOf(false) }
                             DocRow(
                                 kind = doc.format?.kind,
                                 name = doc.name,
                                 detail = listOf(doc.folder, formatSize(doc.size), formatWhen(doc.modified))
                                     .filter { it.isNotEmpty() }.joinToString(" · "),
-                                onClick = { actions.openDevice(doc) },
+                                onClick = { actions.openDevice(doc, settings.openMode) },
+                                trailing = {
+                                    Box {
+                                        IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "더 보기") }
+                                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                            val other = settings.openMode.other()
+                                            DropdownMenuItem(
+                                                text = { Text("${other.label}로 열기") },
+                                                onClick = { menu = false; actions.openDevice(doc, other) },
+                                            )
+                                        }
+                                    }
+                                },
                             )
                         }
                     }
                 }
             }
         }
+    }
+}
+
+fun OpenMode.other(): OpenMode = if (this == OpenMode.VIEW) OpenMode.EDIT else OpenMode.VIEW
+
+/** 문서를 누르면 보기로 열지, 편집으로 열지 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ModeRow(mode: OpenMode, onChange: (OpenMode) -> Unit) {
+    Column(Modifier.padding(top = 4.dp, bottom = 4.dp)) {
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            OpenMode.entries.forEachIndexed { i, m ->
+                SegmentedButton(
+                    selected = mode == m,
+                    onClick = { onChange(m) },
+                    shape = SegmentedButtonDefaults.itemShape(index = i, count = OpenMode.entries.size),
+                    icon = {
+                        Icon(
+                            if (m == OpenMode.VIEW) Icons.Outlined.Visibility else Icons.Outlined.Edit,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                ) { Text(if (m == OpenMode.VIEW) "보기 모드" else "편집 모드") }
+            }
+        }
+        Text(
+            if (mode == OpenMode.VIEW) "문서를 누르면 툴바 없이 깔끔하게 봅니다. 고치려면 위쪽 '편집'."
+            else "문서를 누르면 바로 고칠 수 있게 엽니다.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp, start = 4.dp),
+        )
     }
 }
 
@@ -337,13 +393,13 @@ private fun SnapshotRow(snap: Snapshot, onRestore: () -> Unit, onDiscard: () -> 
 }
 
 @Composable
-private fun RecentRow(vm: HomeViewModel, doc: RecentDoc, actions: HomeActions) {
+private fun RecentRow(vm: HomeViewModel, doc: RecentDoc, mode: OpenMode, actions: HomeActions) {
     var menu by remember { mutableStateOf(false) }
     DocRow(
         kind = doc.format?.kind,
         name = doc.name,
         detail = listOf(formatWhen(doc.lastOpened), formatSize(doc.size)).filter { it.isNotEmpty() }.joinToString(" · "),
-        onClick = { actions.openRecent(doc) },
+        onClick = { actions.openRecent(doc, mode) },
         trailing = {
             IconButton(onClick = { vm.recent.setStarred(doc.uri, !doc.starred) }) {
                 Icon(
@@ -355,6 +411,14 @@ private fun RecentRow(vm: HomeViewModel, doc: RecentDoc, actions: HomeActions) {
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "더 보기") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    val other = mode.other()
+                    DropdownMenuItem(
+                        text = { Text("${other.label}로 열기") },
+                        onClick = {
+                            menu = false
+                            actions.openRecent(doc, other)
+                        },
+                    )
                     DropdownMenuItem(
                         text = { Text("목록에서 빼기") },
                         onClick = {

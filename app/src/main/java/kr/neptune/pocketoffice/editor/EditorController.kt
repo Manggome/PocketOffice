@@ -33,6 +33,7 @@ import kr.neptune.pocketoffice.core.DeviceScanner
 import kr.neptune.pocketoffice.core.DocFormat
 import kr.neptune.pocketoffice.core.DocIo
 import kr.neptune.pocketoffice.core.EngineStore
+import kr.neptune.pocketoffice.core.OpenMode
 import kr.neptune.pocketoffice.core.Snapshot
 import kr.neptune.pocketoffice.core.baseName
 import kr.neptune.pocketoffice.core.withExt
@@ -83,6 +84,16 @@ class EditorController(private val activity: EditorActivity) {
     var phase by mutableStateOf<Phase>(Phase.Preparing)
         private set
     var readonly by mutableStateOf(false)
+        private set
+
+    /** 보기(툴바 없이 문서만) / 편집 */
+    var mode by mutableStateOf(OpenMode.EDIT)
+        private set
+
+    /** 쪽(슬라이드) 수와 지금 쪽 (0 부터). 편집기가 알려 준다 */
+    var pageCount by mutableStateOf(0)
+        private set
+    var currentPage by mutableStateOf(0)
         private set
     var dialog by mutableStateOf<EditorDialog?>(null)
     /** 저장 중일 때 위쪽 막대에 띄울 말 */
@@ -151,7 +162,8 @@ class EditorController(private val activity: EditorActivity) {
 
     // ------------------------------------------------------------------ 시작
 
-    fun start(request: DocRequest?) {
+    fun start(request: DocRequest?, requestedMode: OpenMode) {
+        mode = if (request is DocRequest.Existing) requestedMode else OpenMode.EDIT
         if (request == null) {
             phase = Phase.Failed("열 문서를 찾지 못했습니다")
             return
@@ -191,7 +203,8 @@ class EditorController(private val activity: EditorActivity) {
         format = fmt
 
         // 저장하지 않고 떠났던 사본이 있으면 먼저 묻는다
-        val snap = app.recovery.find(app.recovery.keyFor(uri.toString()))
+        // 보기 모드로 열 때는 묻지 않는다. 사본은 첫 화면의 "저장하지 않고 닫은 문서" 에 남아 있다
+        val snap = if (mode == OpenMode.EDIT) app.recovery.find(app.recovery.keyFor(uri.toString())) else null
         if (snap != null) {
             dialog = EditorDialog.Recover(snap)
             pendingExisting = Triple(uri, meta.name, fmt)
@@ -221,13 +234,13 @@ class EditorController(private val activity: EditorActivity) {
         sourceUri = uri
         targetUri = if (fmt.convertsOnSave) null else uri
         recoveryKey = app.recovery.keyFor(uri.toString())
-        load(name, fmt, readonly = app.prefs.settings.value.openInViewMode) { DocIo.openInput(activity, uri) }
+        load(name, fmt) { DocIo.openInput(activity, uri) }
     }
 
     private fun openNew(request: DocRequest.New) {
         val fmt = request.format
         recoveryKey = app.recovery.keyFor("new:" + request.id)
-        load("새 ${fmt.kind.label}.${fmt.ext}", fmt, readonly = false) {
+        load("새 ${fmt.kind.label}.${fmt.ext}", fmt) {
             activity.assets.open("templates/blank.${fmt.ext}")
         }
     }
@@ -245,16 +258,23 @@ class EditorController(private val activity: EditorActivity) {
             targetUri = source?.takeIf { sourceFormat == fmt }
             recoveryKey = snap.key
             unsavedExport = true
-            load(snap.name, fmt, readonly = false) { snap.file.inputStream() }
+            load(snap.name, fmt) { snap.file.inputStream() }
         }
     }
 
-    private fun load(name: String, fmt: DocFormat, readonly: Boolean, open: () -> java.io.InputStream) {
+    /** 지금 문서를 처음부터 다시 읽을 방법. 보기 ↔ 편집을 바꿀 때 쓴다 */
+    private var reopen: (() -> java.io.InputStream)? = null
+
+    private fun load(name: String, fmt: DocFormat, open: () -> java.io.InputStream) {
         displayName = name
         title = name
         format = fmt
-        this.readonly = readonly
+        reopen = open
+        val view = mode == OpenMode.VIEW
+        this.readonly = view
         phase = Phase.Loading
+        pageCount = 0
+        currentPage = 0
 
         val token = UUID.randomUUID().toString()
         engine.doc = EngineServer.DocSource(token, fmt.mime, open)
@@ -262,7 +282,8 @@ class EditorController(private val activity: EditorActivity) {
             .put("url", EngineServer.docPath(token, name))
             .put("fileName", name)
             .put("saveExt", fmt.saveExt)
-            .put("readonly", readonly)
+            .put("readonly", view)
+            .put("view", view)
         openScript = "Pocket.open($opts)"
         if (hostReady) runOpen()
         main.removeCallbacks(loadTimeout)
@@ -281,6 +302,8 @@ class EditorController(private val activity: EditorActivity) {
     private fun createWebView() {
         WebView.setWebContentsDebuggingEnabled(true)
         val view = WebView(activity)
+        // 편집기 화면이 보이는 동안 렌더러가 다른 앱에 밀려 버벅이지 않게
+        view.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true)
         view.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         view.setBackgroundColor(if (isNight()) Color.rgb(30, 30, 30) else Color.rgb(243, 243, 243))
         view.settings.apply {
@@ -296,6 +319,8 @@ class EditorController(private val activity: EditorActivity) {
             displayZoomControls = false
             useWideViewPort = true
             loadWithOverviewMode = false
+            // 화면 밖 타일까지 미리 그려 둬서 스크롤이 덜 끊긴다
+            offscreenPreRaster = true
         }
         view.addJavascriptInterface(EditorBridge(workDir, bridgeListener), EditorBridge.NAME)
         view.webViewClient = object : WebViewClient() {
@@ -404,6 +429,10 @@ class EditorController(private val activity: EditorActivity) {
             }
             "dirty" -> editorDirty = payload.optBoolean("dirty", false)
             "readonly" -> readonly = payload.optBoolean("readonly", false)
+            "pages" -> {
+                pageCount = payload.optInt("count", 0)
+                currentPage = payload.optInt("current", 0).coerceAtLeast(0)
+            }
             "requestSave" -> save()
             "error" -> {
                 val message = payload.optString("message", "알 수 없는 오류")
@@ -507,9 +536,37 @@ class EditorController(private val activity: EditorActivity) {
         if (ready) request(Op.Print(dirty), "PDF", "인쇄할 PDF 를 만드는 중…")
     }
 
-    fun toggleReadonly() {
-        if (!ready) return
-        webView?.evaluateJavascript("Pocket.setReadonly(${!readonly})", null)
+    /** 슬라이드·쪽 넘기기 (보기 모드의 아래 막대) */
+    fun goToPage(index: Int) {
+        if (!ready || pageCount <= 0) return
+        val target = index.coerceIn(0, pageCount - 1)
+        currentPage = target
+        webView?.evaluateJavascript("Pocket.goToPage($target)", null)
+    }
+
+    /**
+     * 보기 ↔ 편집. 편집기는 화면 구성을 처음 만들 때만 정하므로 같은 문서를 다른 모드로 다시 연다.
+     * 저장한 뒤라면 저장된 파일을, 아니면 처음 연 것을 다시 읽는다.
+     */
+    fun switchMode(target: OpenMode) {
+        if (target == mode || phase !is Phase.Ready) return
+        val fmt = format ?: return
+        if (target == OpenMode.VIEW && dirty) {
+            dialog = EditorDialog.Message("먼저 저장해 주세요", "고친 내용을 저장한 뒤 보기 모드로 바꿀 수 있습니다.")
+            return
+        }
+        val saved = targetUri
+        if (target == OpenMode.VIEW && fmt == DocFormat.PDF && saved != null) {
+            // PDF 는 앱 자체 뷰어가 더 가볍고 부드럽다
+            runCatching {
+                activity.startActivity(DocRequest.intent(activity, DocRequest.Existing(saved), OpenMode.VIEW, displayName))
+                finish()
+            }
+            return
+        }
+        val source = if (saved != null && !unsavedExport) ({ DocIo.openInput(activity, saved) }) else reopen ?: return
+        mode = target
+        load(displayName, fmt, source)
     }
 
     /** 위치 고르기 결과 */

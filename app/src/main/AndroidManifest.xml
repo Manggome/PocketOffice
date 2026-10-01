@@ -52,17 +52,15 @@
         </activity>
 
         <!--
-            편집 화면. 다른 앱(파일 관리자, 카카오톡, 메일)에서 문서를 누르면 바로 여기로 온다.
-            접었다 펴거나 돌려도 다시 만들어지면 안 된다 — 편집기를 새로 띄우면 고친 내용이 날아간다.
-            문서마다 최근 앱 목록에 따로 뜨게 해서 여러 문서를 오가기 쉽게 한다.
+            다른 앱(파일 관리자, 카카오톡, 메일)에서 문서를 누르면 들어오는 문.
+            화면 없이 첫 화면의 "보기 / 편집" 설정대로 뷰어나 편집기로 넘긴다.
         -->
         <activity
-            android:name=".editor.EditorActivity"
+            android:name=".OpenActivity"
             android:exported="true"
-            android:documentLaunchMode="intoExisting"
-            android:autoRemoveFromRecents="true"
-            android:windowSoftInputMode="adjustResize"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation|uiMode|layoutDirection|locale|fontScale|colorMode|touchscreen">
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
 
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -105,6 +103,26 @@
                 <data android:mimeType="text/csv" />
             </intent-filter>
         </activity>
+
+        <!--
+            편집 화면 (보기 모드면 툴바 없이 문서만). 접었다 펴거나 돌려도 다시 만들어지면 안 된다 —
+            편집기를 새로 띄우면 고친 내용이 날아간다. 문서마다 최근 앱 목록에 따로 뜬다.
+        -->
+        <activity
+            android:name=".editor.EditorActivity"
+            android:exported="false"
+            android:documentLaunchMode="intoExisting"
+            android:autoRemoveFromRecents="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation|uiMode|layoutDirection|locale|fontScale|colorMode|touchscreen" />
+
+        <!-- PDF 보기 전용 화면 (안드로이드 기본 렌더러) -->
+        <activity
+            android:name=".viewer.PdfViewerActivity"
+            android:exported="false"
+            android:documentLaunchMode="intoExisting"
+            android:autoRemoveFromRecents="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation|uiMode|layoutDirection|locale|fontScale|colorMode" />
 
         <!-- 업데이트 APK 설치, 문서 공유/인쇄용 임시 파일을 넘길 때 사용 -->
         <provider

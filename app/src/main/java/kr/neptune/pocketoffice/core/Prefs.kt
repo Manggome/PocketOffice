@@ -7,12 +7,22 @@ import kotlinx.coroutines.flow.asStateFlow
 
 enum class SortMode(val label: String) { RECENT("최근 수정순"), NAME("이름순") }
 
+/** 문서를 누르면 어떻게 열지. 첫 화면 위쪽에서 고른다 */
+enum class OpenMode(val label: String) {
+    /** 툴바·메뉴 없이 보기만. PDF 는 앱 자체 뷰어 */
+    VIEW("보기"),
+
+    /** 지금까지의 편집 화면 */
+    EDIT("편집"),
+}
+
 data class Settings(
-    /** 문서를 열면 읽기 모드로 시작한다. 실수로 고치는 일을 막고 싶은 사람용 */
-    val openInViewMode: Boolean = false,
+    val openMode: OpenMode = OpenMode.VIEW,
     /** 앱을 켤 때 새 버전을 조용히 확인한다 */
     val autoUpdateCheck: Boolean = true,
     val sort: SortMode = SortMode.RECENT,
+    /** PDF 뷰어에서 페이지 색을 뒤집어 어둡게 본다 */
+    val pdfNight: Boolean = false,
 )
 
 class Prefs(context: Context) {
@@ -25,15 +35,17 @@ class Prefs(context: Context) {
         val next = block(_settings.value)
         _settings.value = next
         sp.edit()
-            .putBoolean("openInViewMode", next.openInViewMode)
+            .putString("openMode", next.openMode.name)
             .putBoolean("autoUpdateCheck", next.autoUpdateCheck)
             .putString("sort", next.sort.name)
+            .putBoolean("pdfNight", next.pdfNight)
             .apply()
     }
 
     private fun read() = Settings(
-        openInViewMode = sp.getBoolean("openInViewMode", false),
+        openMode = runCatching { OpenMode.valueOf(sp.getString("openMode", null) ?: "") }.getOrDefault(OpenMode.VIEW),
         autoUpdateCheck = sp.getBoolean("autoUpdateCheck", true),
         sort = runCatching { SortMode.valueOf(sp.getString("sort", null) ?: "") }.getOrDefault(SortMode.RECENT),
+        pdfNight = sp.getBoolean("pdfNight", false),
     )
 }

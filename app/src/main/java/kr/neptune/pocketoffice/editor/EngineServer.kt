@@ -60,7 +60,8 @@ class EngineServer(context: Context) {
             return status(500, "Error")
         } ?: return status(404, "Not Found")
         val (mime, encoding) = mimeFor("engine/$enginePath")
-        return WebResourceResponse(mime, encoding, 200, "OK", NO_CACHE, stream)
+        // WebView 는 작은 조각으로 여러 번 읽는다. zip 압축 풀기를 조각마다 하지 않게 크게 묶어 읽는다
+        return WebResourceResponse(mime, encoding, 200, "OK", NO_CACHE, stream.buffered(BUFFER))
     }
 
     private fun serveDoc(path: String): WebResourceResponse {
@@ -68,7 +69,7 @@ class EngineServer(context: Context) {
         val token = path.removePrefix(DOC_PREFIX).substringBefore('/')
         if (token != current.token) return status(404, "Not Found")
         return try {
-            WebResourceResponse(current.mime, null, 200, "OK", NO_CACHE, current.open())
+            WebResourceResponse(current.mime, null, 200, "OK", NO_CACHE, current.open().buffered(BUFFER))
         } catch (t: Throwable) {
             Log.w(TAG, "문서를 열지 못했습니다", t)
             status(500, "Cannot Read")
@@ -104,6 +105,7 @@ class EngineServer(context: Context) {
         fun docPath(token: String, fileName: String): String = DOC_PREFIX + token + "/" + Uri.encode(fileName)
 
         private val NO_CACHE = mapOf("Cache-Control" to "no-store")
+        private const val BUFFER = 256 * 1024
 
         // tools/dev-server.mjs 의 MIME 표와 맞춰 둔다
         private val MIME = mapOf(

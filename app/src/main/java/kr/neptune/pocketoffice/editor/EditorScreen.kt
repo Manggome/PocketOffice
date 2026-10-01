@@ -15,6 +15,13 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.exclude
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imeAnimationTarget
+import androidx.compose.foundation.layout.union
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -53,39 +60,128 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kr.neptune.pocketoffice.core.DocKind
+import kr.neptune.pocketoffice.core.OpenMode
 import kr.neptune.pocketoffice.core.baseName
 import androidx.compose.foundation.layout.widthIn
 import kr.neptune.pocketoffice.ui.DocBadge
 import kr.neptune.pocketoffice.ui.EngineCard
 import kr.neptune.pocketoffice.ui.formatWhen
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EditorScreen(c: EditorController) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surface)
-            // 키보드가 올라오면 편집기가 그만큼 줄어든다 (edge-to-edge 에서는 adjustResize 가 저절로 안 된다)
-            .windowInsetsPadding(WindowInsets.safeDrawing)
-    ) {
-        TopBar(c)
-        Box(Modifier.fillMaxWidth().height(2.dp)) {
-            if (c.busy != null) LinearProgressIndicator(Modifier.fillMaxWidth())
-        }
-        Box(Modifier.fillMaxWidth().weight(1f)) {
-            c.webView?.let { view ->
-                AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
+    // Surface 로 감싸야 글자·아이콘 색이 테마를 따른다. 그냥 Column 에 배경만 칠하면
+    // 기본 글자색(검정)이 남아 다크 모드에서 위쪽 막대 글씨가 안 보였다
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                // 키보드는 "다 올라왔을 때의 높이" 로 한 번만 줄인다. 올라오는 동안 매 프레임 편집기 크기를
+                // 바꾸면 편집기가 그때마다 다시 배치해서 키보드가 뜰 때 버벅인다
+                .windowInsetsPadding(
+                    WindowInsets.safeDrawing.exclude(WindowInsets.ime).union(WindowInsets.imeAnimationTarget)
+                )
+        ) {
+            if (c.mode == OpenMode.VIEW) ViewTopBar(c) else TopBar(c)
+            Box(Modifier.fillMaxWidth().height(2.dp)) {
+                if (c.busy != null) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
-            when (val phase = c.phase) {
-                Phase.Preparing, Phase.Loading -> LoadingCover(c)
-                is Phase.Failed -> FailedCover(phase.message, onClose = c::close, diagnostics = c::diagnostics)
-                Phase.Ready -> Unit
+            Box(Modifier.fillMaxWidth().weight(1f)) {
+                c.webView?.let { view ->
+                    AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
+                }
+                when (val phase = c.phase) {
+                    Phase.Preparing, Phase.Loading -> LoadingCover(c)
+                    is Phase.Failed -> FailedCover(phase.message, onClose = c::close, diagnostics = c::diagnostics)
+                    Phase.Ready -> Unit
+                }
+            }
+            if (c.mode == OpenMode.VIEW && c.format?.kind == DocKind.SLIDE && c.phase == Phase.Ready && c.pageCount > 1) {
+                SlideBar(c)
             }
         }
     }
     Dialogs(c)
 }
 
+/** 보기 모드: 뒤로, 이름, 쪽, 편집 — 그 밖에는 아무것도 없다 */
+@Composable
+private fun ViewTopBar(c: EditorController) {
+    var menu by remember { mutableStateOf(false) }
+    val ready = c.phase == Phase.Ready
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = c::onBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "뒤로")
+        }
+        DocBadge(c.format?.kind, size = 28.dp)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(c.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val sub = when {
+                c.busy != null -> c.busy!!
+                !ready -> "여는 중"
+                c.pageCount > 0 && c.format?.kind == DocKind.SLIDE -> "슬라이드 ${c.currentPage + 1} / ${c.pageCount}"
+                c.pageCount > 0 && c.format?.kind != DocKind.SHEET -> "${c.currentPage + 1} / ${c.pageCount} 쪽"
+                else -> c.format?.kind?.label ?: ""
+            }
+            Text(sub, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        FilledTonalButton(
+            onClick = { c.switchMode(OpenMode.EDIT) },
+            enabled = ready,
+            modifier = Modifier.padding(end = 4.dp),
+        ) {
+            Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("편집")
+        }
+        Box {
+            IconButton(onClick = { menu = true }, enabled = ready) {
+                Icon(Icons.Outlined.MoreVert, contentDescription = "더 보기")
+            }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text("공유") }, onClick = { menu = false; c.share() })
+                DropdownMenuItem(text = { Text("인쇄") }, onClick = { menu = false; c.print() })
+                if (c.format?.kind != DocKind.PDF) {
+                    DropdownMenuItem(text = { Text("PDF 로 내보내기") }, onClick = { menu = false; c.exportPdf() })
+                }
+            }
+        }
+    }
+}
+
+/** 보기 모드의 프레젠테이션: 이전 / 지금 / 다음 */
+@Composable
+private fun SlideBar(c: EditorController) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        IconButton(onClick = { c.goToPage(c.currentPage - 1) }, enabled = c.currentPage > 0) {
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "이전 슬라이드")
+        }
+        Text(
+            "${c.currentPage + 1} / ${c.pageCount}",
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(horizontal = 24.dp),
+        )
+        IconButton(onClick = { c.goToPage(c.currentPage + 1) }, enabled = c.currentPage < c.pageCount - 1) {
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "다음 슬라이드")
+        }
+    }
+}
+
+/** 편집 모드: 저장 상태와 저장 버튼 */
 @Composable
 private fun TopBar(c: EditorController) {
     var menu by remember { mutableStateOf(false) }
@@ -112,7 +208,6 @@ private fun TopBar(c: EditorController) {
             val sub = when {
                 c.busy != null -> c.busy!!
                 !ready -> "여는 중"
-                c.readonly -> "읽기 모드"
                 c.dirty -> "저장 안 됨"
                 else -> "저장됨"
             }
@@ -125,20 +220,12 @@ private fun TopBar(c: EditorController) {
             }
         }
 
-        if (ready && c.readonly) {
-            FilledTonalButton(onClick = c::toggleReadonly, modifier = Modifier.padding(end = 4.dp)) {
-                Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("편집")
-            }
-        } else {
-            IconButton(onClick = c::save, enabled = ready && c.busy == null) {
-                Icon(
-                    Icons.Outlined.Save,
-                    contentDescription = "저장",
-                    tint = if (c.dirty) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        IconButton(onClick = c::save, enabled = ready && c.busy == null) {
+            Icon(
+                Icons.Outlined.Save,
+                contentDescription = "저장",
+                tint = if (c.dirty) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         Box {
@@ -153,10 +240,7 @@ private fun TopBar(c: EditorController) {
                 DropdownMenuItem(text = { Text("공유") }, onClick = { menu = false; c.share() })
                 DropdownMenuItem(text = { Text("인쇄") }, onClick = { menu = false; c.print() })
                 HorizontalDivider()
-                DropdownMenuItem(
-                    text = { Text(if (c.readonly) "편집 모드로" else "읽기 모드로") },
-                    onClick = { menu = false; c.toggleReadonly() },
-                )
+                DropdownMenuItem(text = { Text("보기 모드로") }, onClick = { menu = false; c.switchMode(OpenMode.VIEW) })
             }
         }
     }

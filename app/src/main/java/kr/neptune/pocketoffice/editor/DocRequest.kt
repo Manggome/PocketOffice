@@ -1,13 +1,17 @@
 package kr.neptune.pocketoffice.editor
 
+import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import kr.neptune.pocketoffice.core.DocFormat
+import kr.neptune.pocketoffice.core.OpenMode
+import kr.neptune.pocketoffice.viewer.PdfViewerActivity
 import java.util.UUID
 
-/** 편집 화면을 무엇으로 열지 */
+/** 무엇을 열지 */
 sealed interface DocRequest {
     /** 폰에 있는 파일 */
     data class Existing(val uri: Uri) : DocRequest
@@ -20,12 +24,29 @@ sealed interface DocRequest {
 
     companion object {
         private const val SCHEME = "pocketoffice"
+        const val EXTRA_MODE = "kr.neptune.pocketoffice.MODE"
 
         /**
-         * 문서마다 최근 앱 목록에 따로 뜨게 하려고(documentLaunchMode) 새 문서·복구에도
-         * 고유한 data uri 를 붙인다. 이 uri 는 앱 안에서만 쓰이고 밖으로 나가지 않는다.
+         * 열 화면을 고른다. PDF 를 "보기" 로 열면 앱 자체 뷰어, 나머지는 편집기 화면이다
+         * (편집기 화면도 보기 모드면 툴바 없이 문서만 띄운다).
+         *
+         * @param nameHint 파일 이름을 알고 있으면 넘긴다. 형식을 알려고 다시 묻지 않게
          */
-        fun intent(context: Context, request: DocRequest): Intent {
+        fun intent(context: Context, request: DocRequest, mode: OpenMode, nameHint: String? = null): Intent {
+            // 새 문서와 복구 사본은 고치려고 여는 것이다
+            val finalMode = if (request is Existing) mode else OpenMode.EDIT
+
+            if (request is Existing && finalMode == OpenMode.VIEW && isPdf(context, request.uri, nameHint)) {
+                return Intent(context, PdfViewerActivity::class.java).apply {
+                    action = Intent.ACTION_VIEW
+                    data = request.uri
+                    addFlags(grantFlags(context, request.uri))
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
+                }
+            }
+
+            // 문서마다 최근 앱 목록에 따로 뜨게 하려고(documentLaunchMode) 새 문서·복구에도
+            // 고유한 data uri 를 붙인다. 이 uri 는 앱 안에서만 쓰이고 밖으로 나가지 않는다
             val data = when (request) {
                 is Existing -> request.uri
                 is New -> Uri.parse("$SCHEME://new/${request.id}?ext=${request.format.ext}")
@@ -34,11 +55,37 @@ sealed interface DocRequest {
             return Intent(context, EditorActivity::class.java).apply {
                 action = Intent.ACTION_VIEW
                 setData(data)
-                if (request is Existing) {
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                }
+                putExtra(EXTRA_MODE, finalMode.name)
+                if (request is Existing) addFlags(grantFlags(context, request.uri))
                 addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
             }
+        }
+
+        fun modeOf(intent: Intent?): OpenMode? =
+            intent?.getStringExtra(EXTRA_MODE)?.let { runCatching { OpenMode.valueOf(it) }.getOrNull() }
+
+        /**
+         * 넘겨줄 수 있는 권한만 넘긴다. 갖고 있지 않은 쓰기 권한을 넘기려 하면
+         * startActivity 가 SecurityException 으로 죽는다 (메신저가 읽기만 허락한 파일 등).
+         */
+        private fun grantFlags(context: Context, uri: Uri): Int {
+            if (uri.scheme != ContentResolver.SCHEME_CONTENT) return 0
+            var flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+            val pid = android.os.Process.myPid()
+            val uid = android.os.Process.myUid()
+            if (context.checkUriPermission(uri, pid, uid, Intent.FLAG_GRANT_WRITE_URI_PERMISSION) ==
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                flags = flags or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            }
+            return flags
+        }
+
+        private fun isPdf(context: Context, uri: Uri, nameHint: String?): Boolean {
+            DocFormat.fromName(nameHint)?.let { return it == DocFormat.PDF }
+            DocFormat.fromName(uri.lastPathSegment)?.let { return it == DocFormat.PDF }
+            val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
+            return DocFormat.fromMime(mime) == DocFormat.PDF
         }
 
         fun newDocument(format: DocFormat) = New(format, UUID.randomUUID().toString())

@@ -10,6 +10,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import kr.neptune.pocketoffice.PocketOfficeApp
 import kr.neptune.pocketoffice.ui.PocketTheme
 
 /**
@@ -37,7 +38,8 @@ class EditorActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         controller = EditorController(this)
-        controller.start(DocRequest.from(intent))
+        val mode = DocRequest.modeOf(intent) ?: PocketOfficeApp.instance.prefs.settings.value.openMode
+        controller.start(DocRequest.from(intent), mode)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = controller.onBack()
@@ -52,7 +54,9 @@ class EditorActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // 같은 문서를 또 열면 이 화면이 앞으로 나올 뿐이다 (documentLaunchMode=intoExisting)
+        // 같은 문서를 또 열면 이 화면이 앞으로 나온다 (documentLaunchMode=intoExisting).
+        // 다른 모드로 열었으면 그 모드로 바꾼다
+        DocRequest.modeOf(intent)?.let { controller.switchMode(it) }
     }
 
     override fun onStop() {

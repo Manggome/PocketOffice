@@ -60,6 +60,7 @@
     switch (data.type) {
       case 'document:ready':
         ready = true;
+        hookDocsApi(frame.contentWindow);
         emit('ready');
         pending.splice(0).forEach(function (msg) {
           frame.contentWindow.postMessage(msg, location.origin);
@@ -69,6 +70,7 @@
       case 'document:opened':
         readonly = !!payload.readonly;
         emit('opened', { readonly: readonly });
+        afterOpen();
         break;
 
       case 'document:dirty-changed':
@@ -229,10 +231,158 @@
     hookApps();
   });
 
+  // 보기 모드.
+  //
+  // 편집기는 문서를 열 때 DocsAPI.DocEditor(설정) 를 한 번 만든다. 그 설정에 화면 구성을 넣으면
+  // 툴바·메뉴·눈금자 없이 문서만 띄울 수 있다. 설정은 만들 때 한 번만 먹으므로, 보기 ↔ 편집을
+  // 바꾸려면 문서를 다시 연다 (앱이 알아서 한다).
+  var viewMode = false;
+
+  function viewCustomization(cfg) {
+    var type = cfg.documentType; // word / cell / slide / pdf
+    var c = (cfg.editorConfig.customization = cfg.editorConfig.customization || {});
+    c.compactHeader = true;
+    c.toolbarHideFileName = true;
+    c.hideRulers = true;
+    c.hideRightMenu = true;
+    c.hideNotes = true;
+    c.help = false;
+    c.plugins = false;
+    c.comments = false;
+    // 문서 너비에 맞춰 시작 (-2), 슬라이드는 한 장이 다 보이게 (-1)
+    c.zoom = type === 'slide' ? -1 : -2;
+    c.layout = {
+      toolbar: false,
+      leftMenu: false,
+      rightMenu: false,
+      header: { editMode: false, save: false, user: false, users: false },
+      // 스프레드시트는 아래 막대에 시트 탭이 있어서 남긴다
+      statusBar: type === 'cell' ? { actionStatus: false, docLang: false, textLang: false } : false,
+    };
+    cfg.editorConfig.mode = 'view';
+  }
+
+  function hookDocsApi(win) {
+    if (!win || win.__pocketDocsHook) return;
+    win.__pocketDocsHook = true;
+    function wrap(api) {
+      if (!api || !api.DocEditor || api.DocEditor.__pocket) return api;
+      var Orig = api.DocEditor;
+      var Wrapped = function (id, cfg) {
+        if (viewMode && cfg && cfg.editorConfig) {
+          try {
+            viewCustomization(cfg);
+          } catch (e) {
+            log('보기 모드 설정 실패: ' + e);
+          }
+        }
+        return new Orig(id, cfg);
+      };
+      Object.keys(Orig).forEach(function (k) {
+        Wrapped[k] = Orig[k];
+      });
+      Wrapped.prototype = Orig.prototype;
+      Wrapped.__pocket = true;
+      api.DocEditor = Wrapped;
+      return api;
+    }
+    // DocsAPI 는 첫 문서를 열 때 script 로 늦게 들어오고, 빈 객체가 먼저 생긴 뒤 DocEditor 가 붙는다.
+    // 그래서 꺼내 쓰는 순간마다 감싼다 (이미 감쌌으면 그대로 둔다)
+    var holder = win.DocsAPI;
+    Object.defineProperty(win, 'DocsAPI', {
+      configurable: true,
+      get: function () {
+        return wrap(holder);
+      },
+      set: function (v) {
+        holder = v;
+      },
+    });
+  }
+
+  // 편집기 앱(iframe 안의 iframe)의 창과 SDK
+  function appWindow() {
+    try {
+      var f = frame.contentWindow.document.querySelector('iframe');
+      return f && f.contentWindow;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function sdk() {
+    var w = appWindow();
+    return (w && w.Asc && w.Asc.editor) || (w && w.editor) || null;
+  }
+
+  // 열린 뒤: 보기 모드면 남은 꾸밈을 걷어 내고, 쪽 수를 앱에 알린다 (위쪽 "3 / 12", 슬라이드 넘기기)
+  function afterOpen(tries) {
+    tries = tries || 0;
+    var w = appWindow();
+    var api = sdk();
+    // "열림" 알림이 편집기 SDK 가 다 뜨기 전에 오기도 한다. 뜰 때까지 잠깐씩 기다린다
+    if (!w || !api || typeof api.asc_registerCallback !== 'function' || !w.document.head) {
+      if (tries < 100) {
+        setTimeout(function () {
+          afterOpen(tries + 1);
+        }, 300);
+      }
+      return;
+    }
+    if (w.__pocketAfterOpen) return;
+    w.__pocketAfterOpen = true;
+
+    if (viewMode && !w.document.getElementById('pocket-view-css')) {
+      var css = w.document.createElement('style');
+      css.id = 'pocket-view-css';
+      // 스프레드시트의 수식 입력줄 (보기에는 필요 없다)
+      css.textContent = '#cell-editing-box{display:none !important}';
+      w.document.head.appendChild(css);
+      w.dispatchEvent(new w.Event('resize'));
+    }
+
+    watchPages();
+  }
+
+  // 쪽 수와 지금 쪽. SDK 콜백은 편집기가 내부 객체를 다시 만들면 끊겨서, 가볍게 물어보는 쪽을 택했다.
+  // 바뀔 때만 앱에 알린다
+  var pageTimer = null;
+  var lastPages = '';
+  function watchPages() {
+    if (pageTimer) return;
+    pageTimer = setInterval(function () {
+      var api = sdk();
+      if (!api || typeof api.getCountPages !== 'function') return;
+      var count = 0;
+      var current = 0;
+      try {
+        count = api.getCountPages() || 0;
+        current = typeof api.getCurrentPage === 'function' ? api.getCurrentPage() || 0 : 0;
+      } catch (e) {
+        return;
+      }
+      var key = count + ':' + current;
+      if (key === lastPages) return;
+      lastPages = key;
+      emit('pages', { count: count, current: current });
+    }, 500);
+  }
+
   window.Pocket = {
+    /** 0 부터 센 쪽(슬라이드)으로 */
+    goToPage: function (index) {
+      var api = sdk();
+      try {
+        if (api && typeof api.goToPage === 'function') api.goToPage(index);
+      } catch (e) {
+        log('쪽 이동 실패: ' + e);
+      }
+    },
+
     /** @param {{url: string, fileName: string, saveExt?: string, readonly?: boolean}} opts */
     open: function (opts) {
       saveExt = String(opts.saveExt || opts.fileName.split('.').pop() || '').toLowerCase();
+      viewMode = !!opts.view;
       post('document:open-url', {
         url: new URL(opts.url, location.href).href,
         fileName: opts.fileName,
@@ -278,7 +428,8 @@
         send('/__dev/event?type=' + encodeURIComponent(type), json);
         // 개발 서버는 ?doc= 로 열 파일을 받는다
         if (type === 'ready' && params.get('doc')) {
-          window.Pocket.open({ url: '/__dev/doc/' + params.get('doc'), fileName: params.get('doc') });
+          var view = params.get('view') === '1';
+          window.Pocket.open({ url: '/__dev/doc/' + params.get('doc'), fileName: params.get('doc'), view: view, readonly: view });
         }
       },
       saveBegin: function (id, name, mime, size) {
