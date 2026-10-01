@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 접힌 모서리가 있는 종이 한 장 + 연필. 108dp 캔버스, 가운데 72dp 가 안전 영역 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 종이 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M38,30 L62,30 L74,42 L74,78 Q74,80 72,80 L38,80 Q36,80 36,78 L36,32 Q36,30 38,30 Z" />
+    <!-- 접힌 모서리 -->
+    <path
+        android:fillColor="#FFC5D0FA"
+        android:pathData="M62,30 L74,42 L64,42 Q62,42 62,40 Z" />
+    <!-- 글줄 -->
+    <path
+        android:fillColor="#FF3B5BDB"
+        android:pathData="M43,50 L67,50 L67,53 L43,53 Z M43,58 L67,58 L67,61 L43,61 Z M43,66 L58,66 L58,69 L43,69 Z" />
+    <!-- 연필 -->
+    <path
+        android:fillColor="#FFFFC94A"
+        android:pathData="M60,76 L78,58 L83,63 L65,81 Z" />
+    <path
+        android:fillColor="#FFFF8A65"
+        android:pathData="M78,58 L80.5,55.5 Q82,54 83.5,55.5 L85.5,57.5 Q87,59 85.5,60.5 L83,63 Z" />
+    <path
+        android:fillColor="#FF2B2B2B"
+        android:pathData="M60,76 L65,81 L58,83 Z" />
+</vector>

@@ -1,0 +1,18 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild
+.cxx
+keystore/release.jks
+*.keystore
+
+# 편집기 엔진. CI 가 ranuts/document 를 빌드해 별도 릴리스(engine-<id>)로 올린다
+engine/build/
+# 개발 서버 산출물
+tools/out/
+tools/samples/
+.claude/

@@ -1,0 +1,4 @@
+# 엔진 id 는 이 파일들의 해시라 줄바꿈이 바뀌면 안 된다
+engine/* text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf

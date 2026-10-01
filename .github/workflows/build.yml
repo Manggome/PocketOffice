@@ -1,0 +1,262 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GRADLE_VERSION: '8.11.1'
+
+jobs:
+  # 편집기 엔진(ranuts/document 빌드 + 추리기)을 별도 릴리스 engine-<id> 로 올린다.
+  # id 는 engine/ENGINE_REF 와 engine/prepare-engine.mjs 의 해시라, 둘 중 하나가 바뀔 때만 새로 만든다.
+  # 앱(APK)은 이 릴리스에서 엔진을 처음 한 번 받는다 (core/EngineStore.kt).
+  engine:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      id: ${{ steps.id.outputs.id }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IS_MAIN: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Engine id
+        id: id
+        run: |
+          ID="$(cat engine/ENGINE_REF engine/prepare-engine.mjs | sha256sum | cut -c1-12)"
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          echo "ENGINE_ID=$ID" >> "$GITHUB_ENV"
+          echo "엔진 id: $ID (ranuts/document $(cat engine/ENGINE_REF))"
+
+      - name: Already published?
+        id: exists
+        run: |
+          if [ "$IS_MAIN" != "true" ]; then
+            echo "main 이 아니라 엔진을 만들지 않습니다 (앱 빌드에는 필요 없음)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif gh release view "engine-$ENGINE_ID" >/dev/null 2>&1; then
+            echo "engine-$ENGINE_ID 이 이미 있습니다 — 엔진 빌드를 건너뜁니다."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        if: steps.exists.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build ranuts/document
+        if: steps.exists.outputs.skip != 'true'
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+        run: |
+          set -e
+          REF="$(cat engine/ENGINE_REF)"
+          mkdir -p /tmp/document && cd /tmp/document
+          git init -q
+          git remote add origin https://github.com/ranuts/document.git
+          git fetch -q --depth 1 origin "$REF"
+          git checkout -q FETCH_HEAD
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build
+          du -sh dist
+
+      - name: Prepare and pack engine
+        if: steps.exists.outputs.skip != 'true'
+        run: |
+          set -e
+          ENGINE_REF="$(cat engine/ENGINE_REF)" node engine/prepare-engine.mjs /tmp/document/dist engine/build/engine
+          mkdir -p dist-engine
+          (cd engine/build/engine && zip -q -r -9 -X "$GITHUB_WORKSPACE/dist-engine/engine.zip" .)
+          (cd dist-engine && sha256sum engine.zip > engine.zip.sha256)
+          ls -lh dist-engine
+          cat dist-engine/engine.zip.sha256
+          # 앱이 첫 파일로 이걸 찾는다
+          unzip -l dist-engine/engine.zip editor.html
+
+      # 프리릴리스로 올려 releases/latest(= 앱 APK) 를 가리지 않게 한다
+      - name: Publish engine release
+        if: steps.exists.outputs.skip != 'true'
+        run: |
+          gh release create "engine-$ENGINE_ID" \
+            --prerelease \
+            --title "편집 엔진 $ENGINE_ID" \
+            --notes "포켓오피스가 처음 실행될 때 받는 편집 엔진입니다. 직접 받을 필요는 없습니다. (ranuts/document $(cat engine/ENGINE_REF))" \
+            dist-engine/engine.zip dist-engine/engine.zip.sha256
+
+  build:
+    needs: engine
+    runs-on: ubuntu-latest
+
+    # 릴리스 발행 + 실패 로그 발행에 필요
+    permissions:
+      contents: write
+
+    env:
+      KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      IS_MAIN: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Gradle
+        run: |
+          curl -sSLo /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
+          mkdir -p "$HOME/gradle-dist"
+          unzip -q /tmp/gradle.zip -d "$HOME/gradle-dist"
+          echo "$HOME/gradle-dist/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Environment check
+        run: |
+          java -version
+          gradle --version
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "versionCode=$((1 + GITHUB_RUN_NUMBER)) versionName=1.0.${GITHUB_RUN_NUMBER} engine=${{ needs.engine.outputs.id }}"
+          test -f keystore/debug.jks && echo "고정 서명 키 있음"
+
+      - name: Decode signing keystore
+        if: env.KEYSTORE_B64 != ''
+        run: |
+          mkdir -p keystore
+          printf '%s' "$KEYSTORE_B64" | base64 -d > keystore/release.jks
+
+      # 정식 서명 키가 없어도 고정 debug 키로 서명된 release APK 가 나온다.
+      - name: Build release APK
+        run: |
+          set -o pipefail
+          gradle :app:assembleRelease --no-daemon --no-build-cache --stacktrace 2>&1 | tee /tmp/gradle.log
+          grep -q "ENGINE_ID = \"${{ needs.engine.outputs.id }}\"" app/build/generated/source/buildConfig/release/kr/neptune/pocketoffice/BuildConfig.java \
+            || { echo "앱의 엔진 id 가 CI 계산과 다릅니다"; exit 1; }
+
+      # 폰에서 바로 받을 수 있도록 알아보기 쉬운 이름으로 정리한다.
+      - name: Collect APK
+        run: |
+          mkdir -p dist
+          APK="$(find app/build/outputs/apk -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" dist/PocketOffice.apk
+
+          # 앱이 자기 버전과 비교해 스스로 업데이트할 수 있도록 버전 정보를 함께 올린다
+          python3 - > dist/latest.json <<'PYJSON'
+          import json, os, subprocess
+          run = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
+          notes = subprocess.run(
+              ["git", "log", "-1", "--pretty=%s"], capture_output=True, text=True
+          ).stdout.strip()
+          print(json.dumps({
+              "versionCode": 1 + run,
+              "versionName": "1.0." + str(run),
+              "sha": os.environ.get("GITHUB_SHA", ""),
+              "notes": notes,
+          }, ensure_ascii=False, indent=2))
+          PYJSON
+
+          cat dist/latest.json
+          ls -lh dist
+
+      # latest 태그를 갱신해 항상 같은 주소로 받을 수 있게 한다:
+      # https://github.com/<repo>/releases/latest/download/PocketOffice.apk
+      - name: Publish release
+        if: env.IS_MAIN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat > /tmp/notes.md <<'NOTES'
+          폰에서 **PocketOffice.apk** 를 눌러 바로 설치하세요.
+
+          처음 한 번만 직접 설치하면, 그다음부터는 앱이 켜질 때 새 버전을 확인해 앱 안에서 업데이트합니다.
+          서명 키가 고정돼 있어 기존 앱을 지우지 않고 덮어쓰기 설치됩니다.
+          편집 엔진(약 180MB)은 앱을 처음 켤 때 한 번만 받습니다.
+          NOTES
+          echo "" >> /tmp/notes.md
+          echo "버전: 1.0.${GITHUB_RUN_NUMBER} · 커밋: ${GITHUB_SHA}" >> /tmp/notes.md
+
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest --latest --title "포켓오피스 1.0.${GITHUB_RUN_NUMBER}" --notes-file /tmp/notes.md \
+            dist/PocketOffice.apk dist/latest.json
+
+          echo "## 설치 링크" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/PocketOffice.apk" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK (백업용 아티팩트)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocketoffice-apk
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+      # 실패 시: 원인만 뽑아 로그 하단 / 실행 요약 / ci-logs 브랜치 에 발행
+      - name: 실패 원인 발행
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f /tmp/gradle.log ]; then
+            echo "Gradle 로그 없음 — 빌드 이전 단계에서 실패했습니다."
+            exit 0
+          fi
+
+          SUM=/tmp/failure-summary.txt
+          {
+            echo "commit : $GITHUB_SHA"
+            echo "run    : $GITHUB_RUN_ID"
+            echo
+            echo "=========== Kotlin / Java 컴파일 에러 ==========="
+            grep -E "^(e|w): " /tmp/gradle.log | head -80 || true
+            echo
+            echo "=========== What went wrong ==========="
+            sed -n '/^FAILURE: Build failed/,/^\* Try:/p' /tmp/gradle.log | head -80 || true
+            echo
+            echo "=========== Caused by ==========="
+            grep -E "Caused by:" /tmp/gradle.log | head -20 || true
+            echo
+            echo "=========== 마지막 80줄 (스택트레이스 제외) ==========="
+            grep -vE "^[[:space:]]+at " /tmp/gradle.log | tail -80 || true
+          } > "$SUM"
+
+          cat "$SUM"
+          {
+            echo '## ❌ 빌드 실패 원인'
+            echo ''
+            echo '```'
+            cat "$SUM"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          rm -rf /tmp/pub && mkdir -p /tmp/pub && cd /tmp/pub
+          git init -q
+          git checkout -q -b ci-logs
+          cp "$SUM" last-failure.txt
+          cp /tmp/gradle.log gradle-full.log
+          git add -A
+          git -c user.name='github-actions' -c user.email='actions@github.com' commit -q -m "ci: 빌드 실패 로그 ($GITHUB_SHA)"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-logs
+
+      - name: Clean up release keystore
+        if: always()
+        run: rm -f keystore/release.jks
