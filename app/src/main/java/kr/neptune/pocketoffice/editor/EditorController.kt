@@ -627,7 +627,16 @@ class EditorController(private val activity: EditorActivity) {
 
     /** 대화상자를 닫는다. 저장 위치를 묻다 닫으면 "저장하고 나가기" 도 취소된 것이다 */
     fun dismissDialog() {
-        if (dialog is EditorDialog.SaveTarget) finishAfterSave = false
+        when (dialog) {
+            // 복구할지 답하기 전에는 아무것도 열지 않은 상태다. 닫으면 화면도 닫는다
+            is EditorDialog.Recover -> {
+                dialog = null
+                finish()
+                return
+            }
+            is EditorDialog.SaveTarget -> finishAfterSave = false
+            else -> Unit
+        }
         dialog = null
     }
 

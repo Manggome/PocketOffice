@@ -24,6 +24,8 @@
   var inflight = 0; // 이쪽에서 시킨 저장이 진행 중인 수
   var saveExt = ''; // 지금 문서를 저장할 형식 (docx, xlsx ...)
   var exportSeq = 0;
+  var readonly = false; // 편집기가 마지막으로 알려 준 읽기 모드
+  var quietReadonly = 0; // 내보내기 때문에 잠깐 바꾼 읽기 모드 알림은 앱에 넘기지 않는다
 
   function log(msg) {
     try {
@@ -65,7 +67,8 @@
         break;
 
       case 'document:opened':
-        emit('opened', { readonly: !!payload.readonly });
+        readonly = !!payload.readonly;
+        emit('opened', { readonly: readonly });
         break;
 
       case 'document:dirty-changed':
@@ -73,21 +76,24 @@
         break;
 
       case 'document:readonly-changed':
-        emit('readonly', { readonly: !!payload.readonly });
+        if (quietReadonly > 0) {
+          quietReadonly--;
+          break;
+        }
+        readonly = !!payload.readonly;
+        emit('readonly', { readonly: readonly });
         break;
 
       case 'document:saved':
         if (saves[data.id]) {
-          delete saves[data.id];
-          inflight = Math.max(0, inflight - 1);
+          finishSave(data.id);
           deliver(data.id, payload);
         }
         break;
 
       case 'document:error':
         if (saves[data.id]) {
-          delete saves[data.id];
-          inflight = Math.max(0, inflight - 1);
+          finishSave(data.id);
           native.saveFailed(data.id, payload.message || '저장하지 못했습니다');
         } else {
           emit('error', { message: payload.message || '알 수 없는 오류' });
@@ -95,6 +101,16 @@
         break;
     }
   });
+
+  function finishSave(id) {
+    var s = saves[id];
+    delete saves[id];
+    inflight = Math.max(0, inflight - 1);
+    if (s && s.restoreReadonly) {
+      quietReadonly++;
+      post('document:set-readonly', { readonly: true });
+    }
+  }
 
   // 저장된 File 을 조각내 Kotlin 으로 보낸다
   function deliver(id, payload) {
@@ -167,8 +183,14 @@
 
     /** 편집 중인 문서를 targetExt(DOCX, XLSX, PPTX, PDF, CSV ...) 로 내보낸다 */
     save: function (id, targetExt) {
-      saves[id] = { ext: targetExt };
+      // 읽기 모드에서는 편집기가 내보내기를 거절한다. 공유·인쇄·PDF 는 읽기 모드에서도 되어야 하니
+      // 잠깐 풀었다가 끝나면 되돌린다 (편집기의 읽기 모드 전환은 즉시 끝나고 순서대로 처리된다)
+      saves[id] = { ext: targetExt, restoreReadonly: readonly };
       inflight++;
+      if (readonly) {
+        quietReadonly++;
+        post('document:set-readonly', { readonly: false });
+      }
       var payload = {};
       if (targetExt) payload.targetExt = targetExt;
       post('document:save', payload, id);

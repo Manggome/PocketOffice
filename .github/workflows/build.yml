@@ -119,9 +119,8 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # 러너에 안드로이드 SDK 가 이미 깔려 있다 ($ANDROID_HOME). android-actions/setup-android 는
+      # 지원이 끝난 sdkmanager 를 부르다 실패하므로 쓰지 않는다. 빠진 것은 AGP 가 직접 받는다.
       - name: Install Gradle
         run: |
           curl -sSLo /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
@@ -134,6 +133,7 @@ jobs:
           java -version
           gradle --version
           echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/platforms" "$ANDROID_HOME/build-tools" || true
           echo "versionCode=$((1 + GITHUB_RUN_NUMBER)) versionName=1.0.${GITHUB_RUN_NUMBER} engine=${{ needs.engine.outputs.id }}"
           test -f keystore/debug.jks && echo "고정 서명 키 있음"
 
