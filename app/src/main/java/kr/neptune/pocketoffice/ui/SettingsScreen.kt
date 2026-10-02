@@ -84,10 +84,10 @@ fun SettingsScreen(vm: HomeViewModel, onBack: () -> Unit, onRequestAccess: () ->
                 )
 
                 SwitchRow(
-                    title = "워드 문서를 선명하게 보기",
-                    caption = "끄면(기본) 고해상도 화면에서 그리는 양을 줄여 보기 모드의 스크롤이 부드러워집니다. 켜면 글자가 더 선명한 대신 무거워집니다.",
-                    checked = settings.sharpWordView,
-                    onChange = { on -> vm.prefs.update { it.copy(sharpWordView = on) } },
+                    title = "문서를 선명하게 그리기",
+                    caption = "끄면(기본) 폴드처럼 해상도가 높은 화면에서 워드·엑셀·파워포인트를 그리는 양을 줄여 스크롤과 넘기기가 부드러워집니다. 켜면 글자가 더 선명한 대신 무거워집니다. 다음에 여는 문서부터 적용됩니다.",
+                    checked = settings.sharpView,
+                    onChange = { on -> vm.prefs.update { it.copy(sharpView = on) } },
                 )
 
                 Section("내 폰의 문서")

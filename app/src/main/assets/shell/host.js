@@ -439,9 +439,9 @@
     open: function (opts) {
       saveExt = String(opts.saveExt || opts.fileName.split('.').pop() || '').toLowerCase();
       viewMode = !!opts.view;
-      // 워드 보기 모드의 그리기 해상도 상한. 앱의 문서 시작 스크립트(EditorController)가
+      // 편집기의 그리기 해상도 상한. 앱의 문서 시작 스크립트(EditorController)가
       // 편집기 창의 devicePixelRatio 를 이 값으로 누른다. 0 이면 손대지 않는다
-      window.__pocketDprCap = viewMode && docType() === 'word' && opts.dprCap ? opts.dprCap : 0;
+      window.__pocketDprCap = opts.dprCap || 0;
       post('document:open-url', {
         url: new URL(opts.url, location.href).href,
         fileName: opts.fileName,

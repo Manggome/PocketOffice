@@ -11,7 +11,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import kr.neptune.pocketoffice.PocketOfficeApp
+import kr.neptune.pocketoffice.ui.Immersive
 import kr.neptune.pocketoffice.ui.PocketTheme
+import kr.neptune.pocketoffice.ui.PresenterKeys
 
 /**
  * 문서 하나의 편집 화면. 다른 앱에서 문서를 눌러도 곧장 여기로 온다.
@@ -69,6 +71,20 @@ class EditorActivity : ComponentActivity() {
         fileCallback = null
         controller.onDestroy()
         super.onDestroy()
+    }
+
+    /** 발표 시작/끝: 상태바를 숨기고 화면이 꺼지지 않게 */
+    fun setPresenting(on: Boolean) = Immersive.set(this, on)
+
+    /**
+     * 블루투스 발표 리모컨·키보드. 보기 모드의 워드(쪽)·프레젠테이션(슬라이드)에서만 넘긴다.
+     * 편집 모드에서는 키가 그대로 편집기로 간다 (글자를 쳐야 하니까).
+     */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (::controller.isInitialized && controller.acceptsPageKeys) {
+            if (PresenterKeys.handle(event, controller.presenting, controller::command)) return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     fun createDocument(name: String, mime: String) {

@@ -61,6 +61,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kr.neptune.pocketoffice.core.DocKind
 import kr.neptune.pocketoffice.core.OpenMode
+import kr.neptune.pocketoffice.ui.PageCommand
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Slideshow
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import kotlin.math.abs
 import kr.neptune.pocketoffice.core.baseName
 import androidx.compose.foundation.layout.widthIn
 import kr.neptune.pocketoffice.ui.DocBadge
@@ -82,9 +96,11 @@ fun EditorScreen(c: EditorController) {
                     WindowInsets.safeDrawing.exclude(WindowInsets.ime).union(WindowInsets.imeAnimationTarget)
                 )
         ) {
-            if (c.mode == OpenMode.VIEW) ViewTopBar(c) else TopBar(c)
-            Box(Modifier.fillMaxWidth().height(2.dp)) {
-                if (c.busy != null) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (!c.presenting) {
+                if (c.mode == OpenMode.VIEW) ViewTopBar(c) else TopBar(c)
+                Box(Modifier.fillMaxWidth().height(2.dp)) {
+                    if (c.busy != null) LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
             }
             Box(Modifier.fillMaxWidth().weight(1f)) {
                 c.webView?.let { view ->
@@ -95,8 +111,9 @@ fun EditorScreen(c: EditorController) {
                     is Phase.Failed -> FailedCover(phase.message, onClose = c::close, diagnostics = c::diagnostics)
                     Phase.Ready -> Unit
                 }
+                if (c.presenting) PresentOverlay(c)
             }
-            if (c.mode == OpenMode.VIEW && c.format?.kind == DocKind.SLIDE && c.phase == Phase.Ready && c.pageCount > 1) {
+            if (!c.presenting && c.mode == OpenMode.VIEW && c.format?.kind == DocKind.SLIDE && c.phase == Phase.Ready && c.pageCount > 1) {
                 SlideBar(c)
             }
         }
@@ -132,6 +149,11 @@ private fun ViewTopBar(c: EditorController) {
             }
             Text(sub, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        if (c.format?.kind == DocKind.SLIDE) {
+            IconButton(onClick = c::startPresent, enabled = ready) {
+                Icon(Icons.Outlined.Slideshow, contentDescription = "발표")
+            }
+        }
         FilledTonalButton(
             onClick = { c.switchMode(OpenMode.EDIT) },
             enabled = ready,
@@ -151,6 +173,72 @@ private fun ViewTopBar(c: EditorController) {
                 if (c.format?.kind != DocKind.PDF) {
                     DropdownMenuItem(text = { Text("PDF 로 내보내기") }, onClick = { menu = false; c.exportPdf() })
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 발표 중 편집기 위에 덮는 투명한 판. 편집기 대신 손가락을 받는다:
+ * 옆으로 밀거나 양옆을 누르면 넘기고, 가운데를 누르면 쪽 번호와 닫기가 잠깐 나온다.
+ * 리모컨의 "화면 끄기" 는 여기서 검게 덮는다.
+ */
+@Composable
+private fun PresentOverlay(c: EditorController) {
+    var overlay by remember { mutableStateOf(true) }
+    LaunchedEffect(overlay, c.currentPage) {
+        if (overlay) {
+            kotlinx.coroutines.delay(2500)
+            overlay = false
+        }
+    }
+    val swipe = with(LocalDensity.current) { 56.dp.toPx() }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    var last = down
+                    do {
+                        val ev = awaitPointerEvent()
+                        last = ev.changes.first()
+                        ev.changes.forEach { it.consume() }
+                    } while (ev.changes.any { it.pressed })
+                    val dx = last.position.x - down.position.x
+                    val dy = last.position.y - down.position.y
+                    when {
+                        abs(dx) > swipe && abs(dx) > abs(dy) -> c.command(if (dx < 0) PageCommand.NEXT else PageCommand.PREV)
+                        abs(dx) < swipe / 3 && abs(dy) < swipe / 3 -> {
+                            val x = down.position.x / size.width.coerceAtLeast(1)
+                            when {
+                                x > 0.66f -> c.command(PageCommand.NEXT)
+                                x < 0.34f -> c.command(PageCommand.PREV)
+                                else -> overlay = !overlay
+                            }
+                        }
+                    }
+                }
+            },
+    ) {
+        if (c.blackout) Box(Modifier.fillMaxSize().background(Color.Black))
+        AnimatedVisibility(visible = overlay, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopEnd)) {
+            IconButton(onClick = c::endPresent, modifier = Modifier.padding(12.dp)) {
+                Icon(Icons.Outlined.Close, contentDescription = "발표 끝내기", modifier = Modifier.size(28.dp))
+            }
+        }
+        AnimatedVisibility(visible = overlay && c.pageCount > 0, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.BottomCenter)) {
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = Color(0xAA303134),
+                contentColor = Color.White,
+                modifier = Modifier.padding(bottom = 20.dp),
+            ) {
+                Text(
+                    "${c.currentPage + 1} / ${c.pageCount}",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                )
             }
         }
     }

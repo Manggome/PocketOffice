@@ -5,7 +5,12 @@ import android.content.Intent
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Bundle
+import android.view.KeyEvent
 import android.widget.Toast
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kr.neptune.pocketoffice.ui.Immersive
+import kr.neptune.pocketoffice.ui.PageCommand
+import kr.neptune.pocketoffice.ui.PresenterKeys
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
@@ -53,6 +58,12 @@ class PdfViewerActivity : ComponentActivity() {
     private var askDiscard by mutableStateOf(false)
     private var backedUp = false
 
+    /** 발표 중이면 시작한 쪽 */
+    private var presentFrom by mutableStateOf<Int?>(null)
+    private var resumeTo by mutableStateOf<Int?>(null)
+    private val readCommands = MutableSharedFlow<PageCommand>(extraBufferCapacity = 16)
+    private val presentCommands = MutableSharedFlow<PageCommand>(extraBufferCapacity = 16)
+
     /** 원래 자리에 못 써서 위치를 고르는 동안 들고 있는 결과 */
     private var pendingOut: File? = null
 
@@ -77,6 +88,7 @@ class PdfViewerActivity : ComponentActivity() {
             override fun handleOnBackPressed() {
                 when {
                     saving -> Unit
+                    presentFrom != null -> presentCommands.tryEmit(PageCommand.EXIT)
                     ink.textDialog != null -> ink.textDialog = null
                     inking -> actions.cancelInk()
                     else -> finishAndRemoveTask()
@@ -96,6 +108,11 @@ class PdfViewerActivity : ComponentActivity() {
                     inking = inking,
                     saving = saving,
                     actions = actions,
+                    presentFrom = presentFrom,
+                    resumeTo = resumeTo,
+                    onResumed = { resumeTo = null },
+                    readCommands = readCommands,
+                    presentCommands = presentCommands,
                 )
                 if (askDiscard) {
                     AlertDialog(
@@ -201,6 +218,18 @@ class PdfViewerActivity : ComponentActivity() {
             }
         }
 
+        override fun startPresent(page: Int) {
+            if (doc == null || inking) return
+            Immersive.set(this@PdfViewerActivity, true)
+            presentFrom = page
+        }
+
+        override fun endPresent(lastPage: Int) {
+            presentFrom = null
+            Immersive.set(this@PdfViewerActivity, false)
+            resumeTo = lastPage
+        }
+
         override fun saveInk() {
             val target = uri ?: return
             val marks = ink.marks.toList()
@@ -271,6 +300,22 @@ class PdfViewerActivity : ComponentActivity() {
         inking = false
         saving = false
         toast("필기를 저장했습니다")
+    }
+
+    /**
+     * 블루투스 발표 리모컨·키보드. 발표 중이면 발표 화면으로, 읽는 중이면 한 쪽씩 넘긴다.
+     * 필기·저장 중이나 대화상자가 떠 있을 때는 손대지 않는다 (글자를 칠 수 있게).
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val busy = inking || saving || askDiscard || ink.textDialog != null || doc == null
+        if (!busy) {
+            val presenting = presentFrom != null
+            val handled = PresenterKeys.handle(event, presenting) { cmd ->
+                if (presenting) presentCommands.tryEmit(cmd) else readCommands.tryEmit(cmd)
+            }
+            if (handled) return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     /** 공유·인쇄용으로 앱 캐시에 한 부 복사한다 */

@@ -64,6 +64,10 @@ import androidx.compose.material.icons.outlined.Draw
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.TextFields
+import androidx.compose.material.icons.outlined.Slideshow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kr.neptune.pocketoffice.ui.PageCommand
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -139,6 +143,9 @@ interface PdfViewerActions {
     fun startInk()
     fun cancelInk()
     fun saveInk()
+    /** [page] 부터 발표 */
+    fun startPresent(page: Int)
+    fun endPresent(lastPage: Int)
 }
 
 @Composable
@@ -151,6 +158,13 @@ fun PdfViewerScreen(
     inking: Boolean,
     saving: Boolean,
     actions: PdfViewerActions,
+    /** 발표 중이면 시작 쪽, 아니면 null */
+    presentFrom: Int? = null,
+    /** 발표를 마치고 돌아올 쪽 (한 번 맞추면 [onResumed]) */
+    resumeTo: Int? = null,
+    onResumed: () -> Unit = {},
+    readCommands: Flow<PageCommand> = emptyFlow(),
+    presentCommands: Flow<PageCommand> = emptyFlow(),
 ) {
     val dark = androidx.compose.foundation.isSystemInDarkTheme()
     val background = if ((dark || night) && !inking) Color(0xFF202124) else Color(0xFFE8EAED)
@@ -161,7 +175,11 @@ fun PdfViewerScreen(
             doc == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-            else -> Pages(title, doc, night && !inking, ink, inking, actions)
+            // 발표 중에도 목록은 그대로 둔다. 끝내고 돌아오면 보던 자리가 남아 있게
+            else -> Pages(title, doc, night && !inking, ink, inking, actions, resumeTo, onResumed, readCommands)
+        }
+        if (doc != null && presentFrom != null) {
+            PdfPresentation(doc, presentFrom, presentCommands, onExit = actions::endPresent)
         }
         if (saving) {
             Box(
@@ -182,7 +200,17 @@ fun PdfViewerScreen(
 }
 
 @Composable
-private fun Pages(title: String, doc: PdfDoc, night: Boolean, ink: InkState, inking: Boolean, actions: PdfViewerActions) {
+private fun Pages(
+    title: String,
+    doc: PdfDoc,
+    night: Boolean,
+    ink: InkState,
+    inking: Boolean,
+    actions: PdfViewerActions,
+    resumeTo: Int?,
+    onResumed: () -> Unit,
+    commands: Flow<PageCommand>,
+) {
     val list = rememberLazyListState()
     val hScroll = rememberScrollState()
     val scope = rememberCoroutineScope()
@@ -200,6 +228,27 @@ private fun Pages(title: String, doc: PdfDoc, night: Boolean, ink: InkState, ink
     // 스크롤을 시작하면 위쪽 막대를 숨긴다 (삼성 기본 뷰어처럼). 다시 보려면 한 번 누른다
     LaunchedEffect(list.isScrollInProgress) {
         if (list.isScrollInProgress && !inking) barsVisible = false
+    }
+
+    // 발표에서 돌아오면 마지막으로 보여 준 쪽으로
+    LaunchedEffect(resumeTo) {
+        if (resumeTo != null) {
+            list.scrollToItem(resumeTo)
+            onResumed()
+        }
+    }
+
+    // 키보드·블루투스 리모컨으로 한 쪽씩
+    LaunchedEffect(commands) {
+        commands.collect { cmd ->
+            val cur = list.currentPage()
+            when (cmd) {
+                PageCommand.NEXT -> list.animateScrollToItem((cur + 1).coerceAtMost(doc.pageCount - 1))
+                PageCommand.PREV -> list.animateScrollToItem((cur - 1).coerceAtLeast(0))
+                PageCommand.START -> actions.startPresent(cur)
+                else -> Unit
+            }
+        }
     }
 
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
@@ -321,7 +370,7 @@ private fun Pages(title: String, doc: PdfDoc, night: Boolean, ink: InkState, ink
                 exit = fadeOut() + slideOutVertically { -it },
                 modifier = Modifier.align(Alignment.TopCenter),
             ) {
-                TopBar(title, night, actions, onGoTo = { goTo = true })
+                TopBar(title, night, actions, onGoTo = { goTo = true }, onPresent = { actions.startPresent(list.currentPage()) })
             }
         }
     }
@@ -798,7 +847,7 @@ private fun FastScroller(list: LazyListState, count: Int, visible: Boolean, modi
 }
 
 @Composable
-private fun TopBar(title: String, night: Boolean, actions: PdfViewerActions, onGoTo: () -> Unit) {
+private fun TopBar(title: String, night: Boolean, actions: PdfViewerActions, onGoTo: () -> Unit, onPresent: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     // 반투명 색은 테마의 짝 글자색을 못 찾아 검정이 된다. 글자색을 직접 정한다
     Surface(
@@ -824,6 +873,7 @@ private fun TopBar(title: String, night: Boolean, actions: PdfViewerActions, onG
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            IconButton(onClick = onPresent) { Icon(Icons.Outlined.Slideshow, contentDescription = "발표") }
             FilledTonalButton(onClick = actions::startInk, modifier = Modifier.padding(end = 4.dp)) {
                 Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
@@ -832,6 +882,7 @@ private fun TopBar(title: String, night: Boolean, actions: PdfViewerActions, onG
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "더 보기") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(text = { Text("발표 (이 쪽부터)") }, onClick = { menu = false; onPresent() })
                     DropdownMenuItem(text = { Text("쪽으로 이동") }, onClick = { menu = false; onGoTo() })
                     DropdownMenuItem(text = { Text(if (night) "밝은 페이지" else "어두운 페이지") }, onClick = { menu = false; actions.setNight(!night) })
                     HorizontalDivider()

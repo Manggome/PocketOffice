@@ -36,6 +36,8 @@ import kr.neptune.pocketoffice.core.DocFormat
 import kr.neptune.pocketoffice.core.DocIo
 import kr.neptune.pocketoffice.core.EngineStore
 import kr.neptune.pocketoffice.core.OpenMode
+import kr.neptune.pocketoffice.core.DocKind
+import kr.neptune.pocketoffice.ui.PageCommand
 import kr.neptune.pocketoffice.core.Snapshot
 import kr.neptune.pocketoffice.core.baseName
 import kr.neptune.pocketoffice.core.withExt
@@ -90,6 +92,13 @@ class EditorController(private val activity: EditorActivity) {
 
     /** 보기(툴바 없이 문서만) / 편집 */
     var mode by mutableStateOf(OpenMode.EDIT)
+        private set
+
+    /** 프레젠테이션 발표 중: 막대를 숨기고 화면 전체에 슬라이드만 */
+    var presenting by mutableStateOf(false)
+        private set
+    /** 발표 리모컨의 "화면 끄기" */
+    var blackout by mutableStateOf(false)
         private set
 
     /** 쪽(슬라이드) 수와 지금 쪽 (0 부터). 편집기가 알려 준다 */
@@ -286,7 +295,7 @@ class EditorController(private val activity: EditorActivity) {
             .put("saveExt", fmt.saveExt)
             .put("readonly", view)
             .put("view", view)
-            .put("dprCap", if (app.prefs.settings.value.sharpWordView) 0 else WORD_VIEW_DPR_CAP)
+            .put("dprCap", if (app.prefs.settings.value.sharpView) 0 else DPR_CAP)
         openScript = "Pocket.open($opts)"
         if (hostReady) runOpen()
         main.removeCallbacks(loadTimeout)
@@ -372,9 +381,9 @@ class EditorController(private val activity: EditorActivity) {
 
     /**
      * 모든 iframe 의 문서가 시작될 때(편집기 스크립트보다 먼저) 도는 스크립트.
-     * 워드 보기 모드면 편집기 창이 보는 devicePixelRatio 를 다리 페이지가 정한 상한으로 누른다.
-     * 워드는 스크롤할 때마다 새 쪽 전체를 화면 해상도로 다시 그리는데, 폴드 같은 고해상도 화면에서는
-     * 그 양이 커서 버벅인다. 2배로 눌러도 글자는 충분히 읽힌다.
+     * 편집기 창(워드·엑셀·파워포인트·PDF)이 보는 devicePixelRatio 를 다리 페이지가 정한 상한으로 누른다.
+     * 편집기는 화면 해상도 그대로 캔버스를 그리는데, 폴드 같은 고해상도 화면(약 2.6~3배)에서는
+     * 그 양이 커서 스크롤·넘기기가 버벅인다. 2배로 눌러도 글자는 충분히 읽힌다.
      */
     private fun installDocumentStartScript(view: WebView) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
@@ -382,7 +391,7 @@ class EditorController(private val activity: EditorActivity) {
             (function () {
               try {
                 var top = window.top;
-                if (top === window || !/\/web-apps\/apps\/documenteditor\//.test(location.pathname)) return;
+                if (top === window || !/\/web-apps\/apps\//.test(location.pathname)) return;
                 var cap = top.__pocketDprCap;
                 if (!cap || !(window.devicePixelRatio > cap)) return;
                 Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: function () { return cap; } });
@@ -561,6 +570,42 @@ class EditorController(private val activity: EditorActivity) {
 
     fun print() {
         if (ready) request(Op.Print(dirty), "PDF", "인쇄할 PDF 를 만드는 중…")
+    }
+
+    /** 보기 모드에서 리모컨·키보드로 넘길 수 있는가 (워드는 쪽, 프레젠테이션은 슬라이드) */
+    val acceptsPageKeys: Boolean
+        get() = mode == OpenMode.VIEW && phase == Phase.Ready && dialog == null &&
+            (format?.kind == DocKind.SLIDE || format?.kind == DocKind.WORD)
+
+    fun startPresent() {
+        if (mode != OpenMode.VIEW || format?.kind != DocKind.SLIDE || phase != Phase.Ready) return
+        presenting = true
+        blackout = false
+        activity.setPresenting(true)
+    }
+
+    fun endPresent() {
+        if (!presenting) return
+        presenting = false
+        blackout = false
+        activity.setPresenting(false)
+    }
+
+    /** 터치·밀기·리모컨·키보드에서 온 넘기기 명령 */
+    fun command(cmd: PageCommand) {
+        when (cmd) {
+            PageCommand.NEXT -> {
+                blackout = false
+                goToPage(currentPage + 1)
+            }
+            PageCommand.PREV -> {
+                blackout = false
+                goToPage(currentPage - 1)
+            }
+            PageCommand.BLACK -> if (presenting) blackout = !blackout
+            PageCommand.EXIT -> endPresent()
+            PageCommand.START -> startPresent()
+        }
     }
 
     /** 슬라이드·쪽 넘기기 (보기 모드의 아래 막대) */
@@ -770,6 +815,7 @@ class EditorController(private val activity: EditorActivity) {
 
     fun onBack() {
         when {
+            presenting -> endPresent()
             dialog != null -> dismissDialog()
             dirty && ready -> dialog = EditorDialog.ConfirmExit
             else -> finish()
@@ -828,6 +874,6 @@ class EditorController(private val activity: EditorActivity) {
 
     private companion object {
         const val TAG = "PocketEditor"
-        const val WORD_VIEW_DPR_CAP = 2.0
+        const val DPR_CAP = 2.0
     }
 }
