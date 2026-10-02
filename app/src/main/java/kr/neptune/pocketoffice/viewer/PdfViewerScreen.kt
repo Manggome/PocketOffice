@@ -1,18 +1,25 @@
 package kr.neptune.pocketoffice.viewer
 
+import android.graphics.Paint
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,16 +29,17 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
-import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -42,17 +50,27 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.Redo
+import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.outlined.BorderColor
+import androidx.compose.material.icons.outlined.CleaningServices
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Draw
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -73,21 +91,30 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -95,6 +122,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kr.neptune.pocketoffice.core.DocKind
 import kr.neptune.pocketoffice.ui.DocBadge
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 private const val MIN_ZOOM = 1f
@@ -103,10 +131,14 @@ private const val MAX_ZOOM = 5f
 /** 뷰어 화면이 바깥(액티비티)에 맡기는 일 */
 interface PdfViewerActions {
     fun back()
-    fun edit()
+    /** OnlyOffice 편집기로 (양식 채우기, 원래 글자 고치기 등) */
+    fun openAdvancedEditor()
     fun share()
     fun print()
     fun setNight(on: Boolean)
+    fun startInk()
+    fun cancelInk()
+    fun saveInk()
 }
 
 @Composable
@@ -115,10 +147,13 @@ fun PdfViewerScreen(
     doc: PdfDoc?,
     error: String?,
     night: Boolean,
+    ink: InkState,
+    inking: Boolean,
+    saving: Boolean,
     actions: PdfViewerActions,
 ) {
     val dark = androidx.compose.foundation.isSystemInDarkTheme()
-    val background = if (dark || night) Color(0xFF202124) else Color(0xFFE8EAED)
+    val background = if ((dark || night) && !inking) Color(0xFF202124) else Color(0xFFE8EAED)
 
     Box(Modifier.fillMaxSize().background(background)) {
         when {
@@ -126,13 +161,28 @@ fun PdfViewerScreen(
             doc == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-            else -> Pages(title, doc, night, actions)
+            else -> Pages(title, doc, night && !inking, ink, inking, actions)
+        }
+        if (saving) {
+            Box(
+                Modifier.fillMaxSize().background(Color(0x66000000)).clickable(enabled = true, onClick = {}),
+                contentAlignment = Alignment.Center,
+            ) {
+                Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface, contentColor = MaterialTheme.colorScheme.onSurface) {
+                    Row(Modifier.padding(horizontal = 24.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.5.dp)
+                        Spacer(Modifier.width(14.dp))
+                        Text("필기를 저장하는 중…")
+                    }
+                }
+            }
         }
     }
+    ink.textDialog?.let { TextNoteDialog(ink, it) }
 }
 
 @Composable
-private fun Pages(title: String, doc: PdfDoc, night: Boolean, actions: PdfViewerActions) {
+private fun Pages(title: String, doc: PdfDoc, night: Boolean, ink: InkState, inking: Boolean, actions: PdfViewerActions) {
     val list = rememberLazyListState()
     val hScroll = rememberScrollState()
     val scope = rememberCoroutineScope()
@@ -149,7 +199,7 @@ private fun Pages(title: String, doc: PdfDoc, night: Boolean, actions: PdfViewer
 
     // 스크롤을 시작하면 위쪽 막대를 숨긴다 (삼성 기본 뷰어처럼). 다시 보려면 한 번 누른다
     LaunchedEffect(list.isScrollInProgress) {
-        if (list.isScrollInProgress) barsVisible = false
+        if (list.isScrollInProgress && !inking) barsVisible = false
     }
 
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
@@ -186,7 +236,7 @@ private fun Pages(title: String, doc: PdfDoc, night: Boolean, actions: PdfViewer
         Box(
             Modifier
                 .fillMaxSize()
-                // 두 손가락: 안쪽 목록보다 먼저 받아서 확대만 한다. 한 손가락은 그대로 흘려보내 스크롤된다
+                // 두 손가락: 안쪽보다 먼저 받아서 확대·이동만 한다 (필기 중이어도). 한 손가락은 그대로 흘려보낸다
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -197,6 +247,9 @@ private fun Pages(title: String, doc: PdfDoc, night: Boolean, actions: PdfViewer
                                 pinching = true
                                 pinch = (pinch * event.calculateZoom()).coerceIn(MIN_ZOOM / zoom, MAX_ZOOM / zoom)
                                 pinchCenter = event.calculateCentroid(useCurrent = true)
+                                val pan = event.calculatePan()
+                                list.dispatchRawDelta(-pan.y)
+                                hScroll.dispatchRawDelta(-pan.x)
                                 event.changes.forEach { it.consume() }
                             }
                         } while (event.changes.any { it.pressed })
@@ -208,12 +261,15 @@ private fun Pages(title: String, doc: PdfDoc, night: Boolean, actions: PdfViewer
                         }
                     }
                 }
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = { barsVisible = !barsVisible },
-                        onDoubleTap = { p -> applyZoom(if (zoom > 1.3f) 1f else 2.5f, p) },
-                    )
-                }
+                .then(
+                    if (inking) Modifier
+                    else Modifier.pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = { barsVisible = !barsVisible },
+                            onDoubleTap = { p -> applyZoom(if (zoom > 1.3f) 1f else 2.5f, p) },
+                        )
+                    }
+                )
                 .graphicsLayer {
                     scaleX = pinch
                     scaleY = pinch
@@ -222,40 +278,51 @@ private fun Pages(title: String, doc: PdfDoc, night: Boolean, actions: PdfViewer
                         (pinchCenter.y / viewportH.coerceAtLeast(1)).coerceIn(0f, 1f),
                     )
                 }
-                .horizontalScroll(hScroll, enabled = zoom > 1f),
+                .horizontalScroll(hScroll, enabled = zoom > 1f && !inking),
         ) {
             LazyColumn(
                 state = list,
+                // 필기 중에는 한 손가락이 펜이다. 넘기기는 두 손가락으로
+                userScrollEnabled = !inking,
                 modifier = Modifier
                     .width(with(density) { contentW.toDp() })
                     .fillMaxHeight(),
-                contentPadding = PaddingValues(top = statusTop + 8.dp, bottom = navBottom + 24.dp),
+                contentPadding = PaddingValues(
+                    top = statusTop + if (inking) 60.dp else 8.dp,
+                    bottom = navBottom + if (inking) 150.dp else 24.dp,
+                ),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(doc.pageCount, key = { it }) { index ->
-                    PdfPage(doc, index, pageW, night, Modifier.padding(horizontal = with(density) { margin.toDp() }))
+                    PdfPage(doc, index, pageW, night, ink, inking, Modifier.padding(horizontal = with(density) { margin.toDp() }))
                 }
             }
         }
 
-        PageBubble(list, doc.pageCount, onClick = { goTo = true }, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = navBottom + 16.dp))
+        if (!inking) {
+            PageBubble(list, doc.pageCount, onClick = { goTo = true }, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = navBottom + 16.dp))
+            FastScroller(
+                list = list,
+                count = doc.pageCount,
+                visible = barsVisible || list.isScrollInProgress,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(top = statusTop + 64.dp, bottom = navBottom + 64.dp),
+            )
+        }
 
-        FastScroller(
-            list = list,
-            count = doc.pageCount,
-            visible = barsVisible || list.isScrollInProgress,
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(top = statusTop + 64.dp, bottom = navBottom + 64.dp),
-        )
-
-        AnimatedVisibility(
-            visible = barsVisible,
-            enter = fadeIn() + slideInVertically { -it },
-            exit = fadeOut() + slideOutVertically { -it },
-            modifier = Modifier.align(Alignment.TopCenter),
-        ) {
-            TopBar(title, night, actions, onGoTo = { goTo = true })
+        if (inking) {
+            Box(Modifier.align(Alignment.TopCenter)) { InkTopBar(ink, actions) }
+            Box(Modifier.align(Alignment.BottomCenter)) { InkToolbar(ink) }
+        } else {
+            AnimatedVisibility(
+                visible = barsVisible,
+                enter = fadeIn() + slideInVertically { -it },
+                exit = fadeOut() + slideOutVertically { -it },
+                modifier = Modifier.align(Alignment.TopCenter),
+            ) {
+                TopBar(title, night, actions, onGoTo = { goTo = true })
+            }
         }
     }
 
@@ -269,17 +336,19 @@ private fun Pages(title: String, doc: PdfDoc, night: Boolean, actions: PdfViewer
 
 /** 한 쪽. 새로 그리는 동안에는 이전에 그려 둔 것(흐려도)을 그대로 보여 준다 */
 @Composable
-private fun PdfPage(doc: PdfDoc, index: Int, width: Int, night: Boolean, modifier: Modifier) {
+private fun PdfPage(doc: PdfDoc, index: Int, width: Int, night: Boolean, ink: InkState, inking: Boolean, modifier: Modifier) {
     var bitmap by remember(index) { mutableStateOf(doc.cached(index, width)) }
-    LaunchedEffect(index, width) {
+    // 필기를 저장하면 새 문서로 바뀐다 → 다시 그린다
+    LaunchedEffect(doc, index, width) {
         // 빨리 넘기는 중에 지나가는 쪽까지 그리지 않게 아주 잠깐 기다린다
         if (bitmap == null) delay(40)
         doc.render(index, width)?.let { bitmap = it }
     }
+    val aspect = doc.aspect(index)
     Box(
         modifier
             .fillMaxWidth()
-            .aspectRatio(1f / doc.aspect(index))
+            .aspectRatio(1f / aspect)
             .background(if (night) Color.Black else Color.White),
     ) {
         bitmap?.let {
@@ -291,8 +360,353 @@ private fun PdfPage(doc: PdfDoc, index: Int, width: Int, night: Boolean, modifie
                 modifier = Modifier.fillMaxSize(),
             )
         }
+        InkLayer(ink, index, aspect, inking)
     }
 }
+
+// ---------------------------------------------------------------------- 필기
+
+/** 한 쪽 위의 필기. 필기 모드일 때만 손가락을 받는다 */
+@Composable
+private fun InkLayer(ink: InkState, page: Int, aspect: Float, enabled: Boolean) {
+    val context = LocalContext.current
+    val paint = remember { Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = InkFont.get(context) } }
+    val marks = ink.marks.filter { it.page == page }
+    val live = ink.live?.takeIf { it.page == page }
+    if (marks.isEmpty() && live == null && !enabled) return
+
+    Canvas(
+        Modifier
+            .fillMaxSize()
+            .then(if (enabled) Modifier.pointerInput(page, ink.tool) { inkGestures(ink, page, aspect, paint) } else Modifier)
+    ) {
+        marks.forEach { drawMark(it, paint) }
+        live?.let { drawMark(it, paint) }
+    }
+}
+
+// 빠른 펜 움직임 사이의 점(historical)까지 받아야 선이 각지지 않는다
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+private suspend fun androidx.compose.ui.input.pointer.PointerInputScope.inkGestures(
+    ink: InkState,
+    page: Int,
+    aspect: Float,
+    paint: Paint,
+) {
+    fun norm(o: Offset) = Offset(
+        (o.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f),
+        (o.y / size.height.coerceAtLeast(1)).coerceIn(0f, 1f),
+    )
+    awaitEachGesture {
+        val down = awaitFirstDown()
+        when (ink.tool) {
+            InkTool.TEXT -> {
+                val up = waitForUpOrCancellation() ?: return@awaitEachGesture
+                up.consume()
+                val p = norm(up.position)
+                val hit = ink.marks.filterIsInstance<TextNote>()
+                    .lastOrNull { it.page == page && ink.textBounds(it, aspect, paint).contains(p) }
+                ink.textDialog = InkState.TextDialog(page, hit?.x ?: p.x, hit?.y ?: p.y, hit)
+            }
+
+            InkTool.ERASER -> {
+                down.consume()
+                fun eraseAt(p: Offset) = ink.remove(ink.hitTest(page, p, InkState.ERASER_RADIUS, aspect, paint))
+                eraseAt(norm(down.position))
+                while (true) {
+                    val ev = awaitPointerEvent()
+                    // 두 번째 손가락이 닿으면 확대·이동으로 넘긴다
+                    if (ev.changes.count { it.pressed } > 1 || ev.changes.any { it.isConsumed }) break
+                    val c = ev.changes.first()
+                    if (!c.pressed) break
+                    c.historical.forEach { eraseAt(norm(it.position)) }
+                    eraseAt(norm(c.position))
+                    c.consume()
+                }
+            }
+
+            InkTool.PEN, InkTool.HIGHLIGHTER -> {
+                down.consume()
+                val highlighter = ink.tool == InkTool.HIGHLIGHTER
+                val points = ArrayList<Offset>().apply { add(norm(down.position)) }
+                fun live() = Stroke(
+                    page = page,
+                    points = points.toList(),
+                    color = if (highlighter) ink.highlighterColor else ink.penColor,
+                    width = if (highlighter) InkState.HIGHLIGHTER_WIDTH else ink.penWidth,
+                    highlighter = highlighter,
+                )
+                ink.live = live()
+                fun add(o: Offset) {
+                    val p = norm(o)
+                    val last = points.last()
+                    // 거의 같은 자리는 건너뛴다 (파일이 쓸데없이 커지지 않게)
+                    if (hypot(p.x - last.x, (p.y - last.y) * aspect) > 0.0012f) points += p
+                }
+                var cancelled = false
+                while (true) {
+                    val ev = awaitPointerEvent()
+                    if (ev.changes.count { it.pressed } > 1 || ev.changes.any { it.isConsumed }) {
+                        cancelled = true
+                        break
+                    }
+                    val c = ev.changes.first()
+                    c.historical.forEach { add(it.position) }
+                    add(c.position)
+                    c.consume()
+                    if (!c.pressed) break
+                    ink.live = live()
+                }
+                val stroke = live()
+                ink.live = null
+                if (!cancelled) ink.add(stroke)
+            }
+        }
+    }
+}
+
+private fun DrawScope.drawMark(m: Mark, paint: Paint) {
+    val w = size.width
+    val h = size.height
+    when (m) {
+        is Stroke -> {
+            if (m.points.isEmpty()) return
+            val path = Path()
+            path.moveTo(m.points[0].x * w, m.points[0].y * h)
+            if (m.points.size == 1) path.lineTo(m.points[0].x * w + 0.5f, m.points[0].y * h)
+            for (i in 1 until m.points.size) path.lineTo(m.points[i].x * w, m.points[i].y * h)
+            drawPath(
+                path,
+                color = Color(m.color).copy(alpha = if (m.highlighter) PdfAnnotator.HIGHLIGHTER_ALPHA else 1f),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = m.width * w,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
+                ),
+                blendMode = if (m.highlighter) BlendMode.Multiply else BlendMode.SrcOver,
+            )
+        }
+
+        is TextNote -> {
+            paint.color = m.color
+            paint.textSize = m.size * w
+            drawIntoCanvas { canvas ->
+                m.lines.forEachIndexed { i, line ->
+                    val baseline = m.y * h + (i * TEXT_LINE_HEIGHT + TEXT_ASCENT) * m.size * w
+                    canvas.nativeCanvas.drawText(line, m.x * w, baseline, paint)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InkTopBar(ink: InkState, actions: PdfViewerActions) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shadowElevation = 3.dp,
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+                .height(52.dp)
+                .padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = actions::cancelInk) { Icon(Icons.Outlined.Close, contentDescription = "필기 끝내기") }
+            Text("필기", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            IconButton(onClick = ink::undo, enabled = ink.canUndo) { Icon(Icons.AutoMirrored.Outlined.Undo, contentDescription = "실행 취소") }
+            IconButton(onClick = ink::redo, enabled = ink.canRedo) { Icon(Icons.AutoMirrored.Outlined.Redo, contentDescription = "다시 실행") }
+            FilledTonalButton(onClick = actions::saveInk, enabled = !ink.isEmpty, modifier = Modifier.padding(start = 4.dp, end = 4.dp)) {
+                Text("저장")
+            }
+        }
+    }
+}
+
+/** 아래 도구 막대: 펜 / 형광펜 / 글자 / 지우개, 그리고 고른 도구의 색과 굵기 */
+@Composable
+private fun InkToolbar(ink: InkState) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shadowElevation = 6.dp,
+        shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                ToolButton(InkTool.PEN, Icons.Outlined.Draw, ink)
+                ToolButton(InkTool.HIGHLIGHTER, Icons.Outlined.BorderColor, ink)
+                ToolButton(InkTool.TEXT, Icons.Outlined.TextFields, ink)
+                ToolButton(InkTool.ERASER, Icons.Outlined.CleaningServices, ink)
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 40.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                when (ink.tool) {
+                    InkTool.PEN -> {
+                        InkState.PEN_COLORS.forEach { c -> Swatch(c, ink.penColor == c) { ink.penColor = c } }
+                        Spacer(Modifier.width(14.dp))
+                        InkState.PEN_WIDTHS.forEachIndexed { i, w ->
+                            WidthDot(i, ink.penWidth == w) { ink.penWidth = w }
+                        }
+                    }
+                    InkTool.HIGHLIGHTER ->
+                        InkState.HIGHLIGHTER_COLORS.forEach { c -> Swatch(c, ink.highlighterColor == c) { ink.highlighterColor = c } }
+                    InkTool.TEXT -> {
+                        InkState.PEN_COLORS.forEach { c -> Swatch(c, ink.textColor == c) { ink.textColor = c } }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "쪽을 눌러 글자 넣기",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    InkTool.ERASER -> Text(
+                        "지울 선이나 글자를 문지르세요 · 넘기기는 두 손가락",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolButton(tool: InkTool, icon: androidx.compose.ui.graphics.vector.ImageVector, ink: InkState) {
+    val selected = ink.tool == tool
+    Column(
+        Modifier
+            .clickable { ink.tool = tool }
+            .background(
+                if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                RoundedCornerShape(12.dp),
+            )
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            icon,
+            contentDescription = tool.label,
+            tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            tool.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun Swatch(color: Int, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .padding(horizontal = 5.dp)
+            .size(30.dp)
+            .clickable(onClick = onClick)
+            .border(
+                BorderStroke(if (selected) 3.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else Color(0x33000000)),
+                CircleShape,
+            )
+            .padding(4.dp)
+            .background(Color(color), CircleShape),
+    )
+}
+
+@Composable
+private fun WidthDot(level: Int, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .padding(horizontal = 4.dp)
+            .size(32.dp)
+            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.size((5 + level * 5).dp).background(MaterialTheme.colorScheme.onSurface, CircleShape))
+    }
+}
+
+/** 글자 넣기 / 고치기. 키보드는 여기서만 뜬다 */
+@Composable
+private fun TextNoteDialog(ink: InkState, d: InkState.TextDialog) {
+    val editing = d.editing
+    var text by remember(d) { mutableStateOf(editing?.text ?: "") }
+    var size by remember(d) { mutableStateOf(editing?.size ?: ink.textSize) }
+    var color by remember(d) { mutableStateOf(editing?.color ?: ink.textColor) }
+    val focus = remember { FocusRequester() }
+
+    fun close() {
+        ink.textDialog = null
+    }
+
+    AlertDialog(
+        onDismissRequest = ::close,
+        title = { Text(if (editing == null) "글자 넣기" else "글자 고치기") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    placeholder = { Text("넣을 글자") },
+                    minLines = 2,
+                    maxLines = 6,
+                    modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                )
+                LaunchedEffect(Unit) { focus.requestFocus() }
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("작게", "보통", "크게").forEachIndexed { i, label ->
+                        val s = InkState.TEXT_SIZES[i]
+                        FilterChip(selected = size == s, onClick = { size = s }, label = { Text(label) })
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    InkState.PEN_COLORS.forEach { c -> Swatch(c, color == c) { color = c } }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val t = text.trimEnd()
+                ink.textSize = size
+                ink.textColor = color
+                when {
+                    editing != null && t.isBlank() -> ink.remove(listOf(editing))
+                    editing != null -> ink.replace(editing, editing.copy(text = t, size = size, color = color))
+                    t.isNotBlank() -> ink.add(TextNote(d.page, d.x, d.y, t, size, color))
+                }
+                close()
+            }) { Text(if (editing == null) "넣기" else "고치기") }
+        },
+        dismissButton = {
+            Row {
+                if (editing != null) {
+                    TextButton(onClick = {
+                        ink.remove(listOf(editing))
+                        close()
+                    }) { Text("지우기") }
+                }
+                TextButton(onClick = ::close) { Text("취소") }
+            }
+        },
+    )
+}
+
+// ---------------------------------------------------------------------- 보기
 
 /** 흰 종이를 검게, 검은 글씨를 희게 */
 private val InvertFilter = ColorFilter.colorMatrix(
@@ -386,7 +800,12 @@ private fun FastScroller(list: LazyListState, count: Int, visible: Boolean, modi
 @Composable
 private fun TopBar(title: String, night: Boolean, actions: PdfViewerActions, onGoTo: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
-    Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f), shadowElevation = 2.dp) {
+    // 반투명 색은 테마의 짝 글자색을 못 찾아 검정이 된다. 글자색을 직접 정한다
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shadowElevation = 2.dp,
+    ) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -405,10 +824,10 @@ private fun TopBar(title: String, night: Boolean, actions: PdfViewerActions, onG
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            FilledTonalButton(onClick = actions::edit, modifier = Modifier.padding(end = 4.dp)) {
+            FilledTonalButton(onClick = actions::startInk, modifier = Modifier.padding(end = 4.dp)) {
                 Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("편집")
+                Text("필기")
             }
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "더 보기") }
@@ -418,6 +837,11 @@ private fun TopBar(title: String, night: Boolean, actions: PdfViewerActions, onG
                     HorizontalDivider()
                     DropdownMenuItem(text = { Text("공유") }, onClick = { menu = false; actions.share() })
                     DropdownMenuItem(text = { Text("인쇄") }, onClick = { menu = false; actions.print() })
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text("고급 편집기로 열기") },
+                        onClick = { menu = false; actions.openAdvancedEditor() },
+                    )
                 }
             }
         }
@@ -449,7 +873,7 @@ private fun GoToDialog(count: Int, onDismiss: () -> Unit, onGo: (Int) -> Unit) {
 
 @Composable
 private fun ErrorCover(message: String, actions: PdfViewerActions) {
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface, contentColor = MaterialTheme.colorScheme.onSurface) {
         Column(
             Modifier.fillMaxSize().padding(32.dp),
             verticalArrangement = Arrangement.Center,
@@ -462,7 +886,7 @@ private fun ErrorCover(message: String, actions: PdfViewerActions) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 TextButton(onClick = actions::back) { Text("닫기") }
                 // 암호 PDF 등은 편집기(OnlyOffice)가 열 수 있다
-                Button(onClick = actions::edit) { Text("편집기로 열기") }
+                Button(onClick = actions::openAdvancedEditor) { Text("편집기로 열기") }
             }
         }
     }

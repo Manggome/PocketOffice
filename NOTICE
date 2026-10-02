@@ -12,6 +12,14 @@ terms permitted by Section 7 of the GNU AGPL. The engine is used unmodified
 apart from removing unused files (engine/prepare-engine.mjs). The ONLYOFFICE
 logo shown in the editor is kept as those terms require.
 
+Bundled in the APK:
+
+- PdfBox-Android (https://github.com/TomRoush/PdfBox-Android), Apache License 2.0,
+  used to write pen/text annotations into PDF files.
+- NanumGothic (app/src/main/assets/fonts/NanumGothic.ttf), Copyright NAVER Corp.,
+  SIL Open Font License 1.1. Subset to Latin, symbols and Hangul; embedded into
+  PDFs only as the glyphs actually used.
+
 The NOTICE of ranuts/document is reproduced below.
 
 ------------------------------------------------------------------------------

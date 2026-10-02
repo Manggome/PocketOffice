@@ -341,7 +341,63 @@
       w.dispatchEvent(new w.Event('resize'));
     }
 
+    if (viewMode && docType() === 'slide') watchSwipe(w);
     watchPages();
+  }
+
+  function docType() {
+    if (/^(pptx|ppt|odp)$/.test(saveExt)) return 'slide';
+    if (/^(xlsx|xls|ods|csv)$/.test(saveExt)) return 'cell';
+    if (saveExt === 'pdf') return 'pdf';
+    return 'word';
+  }
+
+  // 보기 모드 프레젠테이션: 옆으로 밀면 다음 / 이전 슬라이드.
+  // 편집기보다 먼저(capture) 듣되 막지는 않는다 (passive). 세로로 민 것, 느린 끌기, 두 손가락은 무시한다
+  function watchSwipe(w) {
+    if (w.__pocketSwipe) return;
+    w.__pocketSwipe = true;
+    var sx = 0;
+    var sy = 0;
+    var st = 0;
+    var multi = false;
+    w.addEventListener(
+      'touchstart',
+      function (e) {
+        multi = e.touches.length > 1;
+        if (multi) return;
+        sx = e.touches[0].clientX;
+        sy = e.touches[0].clientY;
+        st = Date.now();
+      },
+      { capture: true, passive: true },
+    );
+    w.addEventListener(
+      'touchmove',
+      function (e) {
+        if (e.touches.length > 1) multi = true;
+      },
+      { capture: true, passive: true },
+    );
+    w.addEventListener(
+      'touchend',
+      function (e) {
+        if (multi || e.changedTouches.length !== 1) return;
+        var t = e.changedTouches[0];
+        var dx = t.clientX - sx;
+        var dy = t.clientY - sy;
+        if (Date.now() - st > 700) return;
+        if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+        var api = sdk();
+        if (!api || typeof api.getCurrentPage !== 'function') return;
+        var cur = Math.max(0, api.getCurrentPage() || 0);
+        var next = dx < 0 ? cur + 1 : cur - 1;
+        var count = typeof api.getCountPages === 'function' ? api.getCountPages() : 0;
+        if (next < 0 || (count && next >= count)) return;
+        window.Pocket.goToPage(next);
+      },
+      { capture: true, passive: true },
+    );
   }
 
   // 쪽 수와 지금 쪽. SDK 콜백은 편집기가 내부 객체를 다시 만들면 끊겨서, 가볍게 물어보는 쪽을 택했다.
@@ -383,6 +439,9 @@
     open: function (opts) {
       saveExt = String(opts.saveExt || opts.fileName.split('.').pop() || '').toLowerCase();
       viewMode = !!opts.view;
+      // 워드 보기 모드의 그리기 해상도 상한. 앱의 문서 시작 스크립트(EditorController)가
+      // 편집기 창의 devicePixelRatio 를 이 값으로 누른다. 0 이면 손대지 않는다
+      window.__pocketDprCap = viewMode && docType() === 'word' && opts.dprCap ? opts.dprCap : 0;
       post('document:open-url', {
         url: new URL(opts.url, location.href).href,
         fileName: opts.fileName,

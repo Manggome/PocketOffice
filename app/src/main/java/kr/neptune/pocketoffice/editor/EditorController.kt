@@ -19,6 +19,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -284,6 +286,7 @@ class EditorController(private val activity: EditorActivity) {
             .put("saveExt", fmt.saveExt)
             .put("readonly", view)
             .put("view", view)
+            .put("dprCap", if (app.prefs.settings.value.sharpWordView) 0 else WORD_VIEW_DPR_CAP)
         openScript = "Pocket.open($opts)"
         if (hostReady) runOpen()
         main.removeCallbacks(loadTimeout)
@@ -323,6 +326,7 @@ class EditorController(private val activity: EditorActivity) {
             offscreenPreRaster = true
         }
         view.addJavascriptInterface(EditorBridge(workDir, bridgeListener), EditorBridge.NAME)
+        installDocumentStartScript(view)
         view.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(v: WebView, request: WebResourceRequest): WebResourceResponse? =
                 engine.intercept(request)
@@ -364,6 +368,29 @@ class EditorController(private val activity: EditorActivity) {
         }
         webView = view
         view.loadUrl(EngineServer.HOST_PAGE)
+    }
+
+    /**
+     * 모든 iframe 의 문서가 시작될 때(편집기 스크립트보다 먼저) 도는 스크립트.
+     * 워드 보기 모드면 편집기 창이 보는 devicePixelRatio 를 다리 페이지가 정한 상한으로 누른다.
+     * 워드는 스크롤할 때마다 새 쪽 전체를 화면 해상도로 다시 그리는데, 폴드 같은 고해상도 화면에서는
+     * 그 양이 커서 버벅인다. 2배로 눌러도 글자는 충분히 읽힌다.
+     */
+    private fun installDocumentStartScript(view: WebView) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        val script = """
+            (function () {
+              try {
+                var top = window.top;
+                if (top === window || !/\/web-apps\/apps\/documenteditor\//.test(location.pathname)) return;
+                var cap = top.__pocketDprCap;
+                if (!cap || !(window.devicePixelRatio > cap)) return;
+                Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: function () { return cap; } });
+              } catch (e) {}
+            })();
+        """.trimIndent()
+        runCatching { WebViewCompat.addDocumentStartJavaScript(view, script, setOf(EngineServer.ORIGIN)) }
+            .onFailure { Log.w(TAG, "문서 시작 스크립트를 넣지 못했습니다", it) }
     }
 
     private fun isNight(): Boolean =
@@ -801,5 +828,6 @@ class EditorController(private val activity: EditorActivity) {
 
     private companion object {
         const val TAG = "PocketEditor"
+        const val WORD_VIEW_DPR_CAP = 2.0
     }
 }

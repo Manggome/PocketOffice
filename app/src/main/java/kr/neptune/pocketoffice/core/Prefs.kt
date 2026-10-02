@@ -23,6 +23,11 @@ data class Settings(
     val sort: SortMode = SortMode.RECENT,
     /** PDF 뷰어에서 페이지 색을 뒤집어 어둡게 본다 */
     val pdfNight: Boolean = false,
+    /**
+     * 워드 보기 모드를 화면 해상도 그대로 그린다. 끄면(기본) 고해상도 화면에서 그리는 양을 줄여
+     * 스크롤이 부드러워지는 대신 글자가 조금 덜 선명하다
+     */
+    val sharpWordView: Boolean = false,
 )
 
 class Prefs(context: Context) {
@@ -39,6 +44,7 @@ class Prefs(context: Context) {
             .putBoolean("autoUpdateCheck", next.autoUpdateCheck)
             .putString("sort", next.sort.name)
             .putBoolean("pdfNight", next.pdfNight)
+            .putBoolean("sharpWordView", next.sharpWordView)
             .apply()
     }
 
@@ -47,5 +53,6 @@ class Prefs(context: Context) {
         autoUpdateCheck = sp.getBoolean("autoUpdateCheck", true),
         sort = runCatching { SortMode.valueOf(sp.getString("sort", null) ?: "") }.getOrDefault(SortMode.RECENT),
         pdfNight = sp.getBoolean("pdfNight", false),
+        sharpWordView = sp.getBoolean("sharpWordView", false),
     )
 }

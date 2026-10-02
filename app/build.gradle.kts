@@ -127,4 +127,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    // PDF 뷰어의 필기(펜·형광펜·글자)를 PDF 에 써 넣는다 (Apache 2.0)
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 }

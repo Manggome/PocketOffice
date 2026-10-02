@@ -83,6 +83,13 @@ fun SettingsScreen(vm: HomeViewModel, onBack: () -> Unit, onRequestAccess: () ->
                     modifier = Modifier.padding(top = 6.dp),
                 )
 
+                SwitchRow(
+                    title = "워드 문서를 선명하게 보기",
+                    caption = "끄면(기본) 고해상도 화면에서 그리는 양을 줄여 보기 모드의 스크롤이 부드러워집니다. 켜면 글자가 더 선명한 대신 무거워집니다.",
+                    checked = settings.sharpWordView,
+                    onChange = { on -> vm.prefs.update { it.copy(sharpWordView = on) } },
+                )
+
                 Section("내 폰의 문서")
                 Text(
                     if (hasAccess) "모든 파일 접근이 허용되어 있습니다. '내 폰' 탭에서 문서를 모아 보고, 원본 옆에 바로 저장합니다."
