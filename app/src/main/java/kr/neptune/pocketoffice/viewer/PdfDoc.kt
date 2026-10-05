@@ -96,6 +96,35 @@ class PdfDoc private constructor(
         }
     }
 
+    /**
+     * 확대했을 때 화면에 보이는 부분만 화면 해상도 그대로 그린다 (캐시하지 않는다).
+     *
+     * 쪽 전체를 5배 크기로 그리면 메모리가 터지므로, 보이는 [tileW]x[tileH] 픽셀만 그린다.
+     * [pageWidthPx] 는 지금 배율에서 쪽 전체의 가로 픽셀, ([left],[top]) 은 그중 이 조각이 시작하는 자리.
+     */
+    suspend fun renderTile(index: Int, pageWidthPx: Float, left: Float, top: Float, tileW: Int, tileH: Int): Bitmap? {
+        if (tileW <= 0 || tileH <= 0) return null
+        return withContext(renderThread) {
+            coroutineContext.ensureActive()
+            if (closed) return@withContext null
+            try {
+                val bmp = Bitmap.createBitmap(tileW, tileH, Bitmap.Config.ARGB_8888)
+                bmp.eraseColor(Color.WHITE)
+                val (wPt, _) = pageSizes[index]
+                // PdfRenderer 의 변환은 쪽의 점(1/72 인치, 왼쪽 위 원점) → 비트맵 픽셀
+                val m = android.graphics.Matrix().apply {
+                    postScale(pageWidthPx / wPt, pageWidthPx / wPt)
+                    postTranslate(-left, -top)
+                }
+                renderer.openPage(index).use { it.render(bmp, null, m, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY) }
+                bmp
+            } catch (t: Throwable) {
+                Log.w(TAG, "쪽 $index 조각 그리기 실패", t)
+                null
+            }
+        }
+    }
+
     override fun close() {
         if (closed) return
         closed = true
